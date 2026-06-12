@@ -1,4 +1,4 @@
-﻿# Orca Agentic Universal Proxy
+# Orca Agentic Universal Proxy
 
 Orca 是一款专为 AI 开发工具打造的本地多模型智能代理服务器。
 
@@ -28,6 +28,24 @@ DeepSeek / 通义千问 / 智谱AI / 小米MiMo / OpenAI / Anthropic
 
 - Codex CLI 适配 (OpenAI API)
 - Claude Desktop 适配 (Anthropic API)
+
+---
+
+## v2.1.0 核心更新与优化
+
+### 1. 极致性能与 Token 节约
+- **智能体上下文主动压缩**：上下文超过 15,000 tokens 时，自动在后台请求模型生成紧凑的“会话备忘录”，将中间历史自动归档，保留最新几轮对话与系统提示，极大节省 Token 开销。
+- **高效 Prompt 优化**：系统级 Prompt 经过全面打磨，强制智能体使用 `patch_workspace_file` 替代整档覆盖写，回复极其紧凑，速度与性能全面对标 Codex CLI。
+
+### 2. 界面重构与右侧边栏交互增强
+- **圆形上下文指示器**：移除底部累赘的宽条进度条，在底行控制面板中集成类似于 Codex 的精美 SVG 环形进度圈，悬停可查看精准的 used/total tokens 详情。
+- **内置 Git 暂存与提交**：在右侧 sidebar - Git 面板内，可直接查阅未暂存与未跟踪的改动文件列表，输入说明文字即可一键执行 Stage & Commit。
+- **文件点击本地唤起**：在 Files / Git 列表里，鼠标移动到任何改动过的文件上可高亮展示，点击可直接在 Windows 系统中以关联编辑器（如 VS Code）本地打开。
+
+### 3. 应用扫描与连接稳定性增强
+- **全盘及注册表应用扫描**：解决原本只能检索 C 盘固定路径的痛点。现支持读取 HKCU/HKLM 卸载表、关联 URL 协议（如 `vscode://`, `cursor://`, `trae://`），并动态扫描 `D:`/`E:` 等其它盘符，一键启动本地便携或自定义路径安装的 IDE（如 OpenCode）。
+- **无感长链接保持**：在 passthrough 和 completions 代理路由上禁用 socket 超时，支持长达数十分钟的智能体复杂持续跑单任务而不会产生连接中断。
+- **霓虹感 Orca 鲸鱼图标**：全面更新桌面图标，带来质感极佳的霓虹科幻氛围。
 
 ---
 

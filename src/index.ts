@@ -154,9 +154,13 @@ app.use(express.static(_STATIC_DIR));
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 120,
+  max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    const ip = req.ip || req.socket.remoteAddress || "";
+    return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  },
   message: { error: { message: "Too many requests, please try again later", type: "rate_limit_error" } },
 });
 app.use("/v1/", apiLimiter);
@@ -838,7 +842,7 @@ app.post("/v1/responses", async (req, res) => {
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
-    const targetUrl = resolved.provider.baseUrl + "/v1/chat/completions";
+    const targetUrl = resolved.provider.baseUrl.replace(/\/+$/, "") + "/v1/chat/completions";
     const upstreamResp = await fetch(targetUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${resolved.apiKey}` },
@@ -904,7 +908,7 @@ app.post("/v1/messages", async (req, res) => {
     } else {
       // Convert Anthropic format → OpenAI format, forward to OpenAI-compatible provider
       const chatReq = transformAnthropicRequest({ ...body, model: resolved.model });
-      const targetUrl = resolved.provider.baseUrl + "/v1/chat/completions";
+      const targetUrl = resolved.provider.baseUrl.replace(/\/+$/, "") + "/v1/chat/completions";
       upstreamResp = await fetch(targetUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${resolved.apiKey}` },
@@ -1258,13 +1262,39 @@ async function executeAgentCompletions(
 
         writeDelta(`\n\`\`\`\n${output}\n\`\`\`\n`);
         
+        // Truncate tool output to prevent request body overflow
+        const MAX_TOOL_OUTPUT = 30 * 1024; // 30KB limit for tool output in messages
         let toolContent = output;
+        if (toolContent.length > MAX_TOOL_OUTPUT) {
+          toolContent = toolContent.substring(0, MAX_TOOL_OUTPUT) + "\n\n[Output truncated to prevent request overflow]";
+        }
+        
         const isLastTool = tcIdx === toolCalls.length - 1;
         if (isLastTool) {
           toolContent += `\n\n[System Reminder: Please output the updated Task Plan (e.g. - [x] completed, - [/] in-progress, - [ ] pending) at the beginning of your next response, then continue executing the steps or summarize the results.]`;
         }
         messages.push({ role: "tool", tool_call_id: tc.id, content: toolContent });
         tcIdx++;
+      }
+
+      // Truncate entire messages array if it's getting too large
+      let estimatedSize = 0;
+      for (const msg of messages) {
+        const contentLen = typeof msg.content === "string" ? msg.content.length : (msg.content ? JSON.stringify(msg.content).length : 0);
+        estimatedSize += contentLen + 100;
+        if (msg.tool_call_id) {
+          estimatedSize += msg.tool_call_id.length + 50;
+        }
+        if (msg.tool_calls) {
+          estimatedSize += JSON.stringify(msg.tool_calls).length;
+        }
+      }
+      const MAX_MESSAGES_SIZE = 800 * 1024; // 800KB limit for messages
+      if (estimatedSize > MAX_MESSAGES_SIZE) {
+        log("warn", `[Chat] Messages array too large (~${Math.round(estimatedSize/1024)}KB), truncating older messages`);
+        const systemMsg = messages.find(m => m.role === "system");
+        const recentMessages = messages.slice(-20);
+        messages = systemMsg ? [systemMsg, ...recentMessages] : recentMessages;
       }
 
       if (isClientGone()) {
@@ -1365,6 +1395,109 @@ async function executeAgentCompletions(
 
 // ---- OpenAI passthrough: POST /v1/chat/completions ----
 
+async function compressContextIfNeeded(messages: any[], resolved: any): Promise<any[]> {
+  // Guard: bail out if resolved is missing provider info
+  if (!resolved?.provider?.baseUrl || !resolved?.apiKey) {
+    log("warn", "[Context Compression] Cannot compress: missing provider baseUrl or apiKey");
+    return messages;
+  }
+
+  const estimateTokens = (text: string) => {
+    let count = 0;
+    for (let i = 0; i < text.length; i++) {
+      count += text.charCodeAt(i) > 0x7F ? 2.5 : 0.25;
+    }
+    return Math.round(count);
+  };
+  const totalTokens = estimateTokens(JSON.stringify(messages));
+  if (totalTokens <= 15000) {
+    return messages;
+  }
+  
+  log("info", `[Context Compression] Context size (${totalTokens} tokens) exceeds 15,000 threshold. Compacting context...`);
+  
+  const systemMessages = messages.filter(m => m.role === "system");
+  const activeMessages = messages.filter(m => m.role !== "system");
+  
+  if (activeMessages.length < 8) {
+    return messages;
+  }
+  
+  const keepCount = 6;
+  const toCompress = activeMessages.slice(0, activeMessages.length - keepCount);
+  const toKeep = activeMessages.slice(activeMessages.length - keepCount);
+  
+  const summaryPrompt = "Please analyze the following conversation history and write a dense, concise summary. Highlight what tasks have been completed, what is in progress, any active file paths, and key decisions made. Keep the summary under 500 words.";
+  
+  const conversationText = toCompress.map(m => {
+    let contentStr = "";
+    if (typeof m.content === "string") {
+      contentStr = m.content;
+    } else if (Array.isArray(m.content)) {
+      contentStr = m.content.map((c: any) => c.text || JSON.stringify(c)).join("\n");
+    } else if (m.tool_calls) {
+      contentStr = `Calls tools: ${m.tool_calls.map((tc: any) => tc.function.name).join(", ")}`;
+    }
+    return `[${m.role.toUpperCase()}]: ${contentStr}`;
+  }).join("\n\n");
+  
+  try {
+    const baseUrl = resolved.provider.baseUrl.replace(/\/+$/, "");
+    const targetUrl = baseUrl.endsWith("/v1") ? baseUrl + "/chat/completions" : baseUrl + "/v1/chat/completions";
+    const headers = { 
+      "Content-Type": "application/json", 
+      Authorization: `Bearer ${resolved.apiKey}` 
+    };
+    
+    const compressionBody = {
+      model: resolved.model,
+      messages: [
+        { role: "system", content: "You are a helpful assistant that summarizes conversation logs concisely." },
+        { role: "user", content: `${summaryPrompt}\n\nCONVERSATION:\n${conversationText}` }
+      ],
+      max_tokens: 800,
+      temperature: 0.3
+    };
+    
+    log("info", `[Context Compression] Requesting summary from upstream...`);
+    const compressionController = new AbortController();
+    const compressionTimeout = setTimeout(() => compressionController.abort(), 20000); // 20s timeout
+    const resp = await fetch(targetUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(compressionBody),
+      signal: compressionController.signal
+    });
+    clearTimeout(compressionTimeout);
+    
+    if (!resp.ok) {
+      throw new Error(`Compression upstream returned ${resp.status}`);
+    }
+    const data = await resp.json() as any;
+    const summary = data.choices?.[0]?.message?.content;
+    if (summary) {
+      log("info", `[Context Compression] Successfully compressed middle context.`);
+      const summaryMessage = {
+        role: "system",
+        content: `[System Note: Below is a compacted summary of the conversation history prior to the last few turns. Refer to this summary for context on what has already been done.]\n\n${summary}`
+      };
+      return [...systemMessages, summaryMessage, ...toKeep];
+    }
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      log("warn", "[Context Compression] Compression request timed out after 20s.");
+    } else {
+      log("warn", `[Context Compression] Failed to get AI summary:`, err);
+    }
+  }
+  
+  log("info", `[Context Compression] Falling back to simple truncation (keeping last 12 messages).`);
+  if (activeMessages.length > 12) {
+    return [...systemMessages, ...activeMessages.slice(activeMessages.length - 12)];
+  }
+  return messages;
+}
+
 app.post("/v1/chat/completions", async (req, res) => {
   req.socket.setTimeout(0); // Disable socket timeout for streaming agent loop
   const startTime = Date.now();
@@ -1374,6 +1507,13 @@ app.post("/v1/chat/completions", async (req, res) => {
   const activeSkillId = body.activeSkillId || "";
   const useAgent = body.useAgent; // undefined = no agent, true = Build mode, false = Plan mode
   
+  // Resolve target model early for context compression
+  const resolvedTarget = resolveModel(body.model);
+  
+  // Compress messages if context is too large
+  let messages = [...(body.messages || [])];
+  messages = await compressContextIfNeeded(messages, resolvedTarget);
+
   // Persistent Caching Check
   let cacheKey: string | null = null;
   const canUseResponseCache = body.useAgent === undefined && !body.activeSkillId && !body.workspacePath && !body.tool_choice && !body.tools;
@@ -1399,7 +1539,6 @@ app.post("/v1/chat/completions", async (req, res) => {
   }
 
   // Load Active Skill instructions
-  let messages = [...(body.messages || [])];
   if (activeSkillId) {
     const skillPath = path.join(SKILLS_DIR, activeSkillId);
     const skillFile = path.join(skillPath, "SKILL.md");
@@ -1469,7 +1608,14 @@ Execute each task step-by-step. Do not skip printing the task list at any turn.
 3. 在进行任何工具调用之前，你必须在文本回复中先输出这个任务清单，以便前端 UI 正确渲染分步执行面板。
 4. 在后续的每一次迭代回复中，你必须在回复的最开始输出更新后的任务清单（例如，将已完成的标记为 [x]，正在执行的标记为 [/]，待执行的标记为 [ ]），绝对不能省略。
 5. 按照清单步骤，一步一步执行，直至所有任务完成。
-` + getSkillsSystemPrompt();
+` + getSkillsSystemPrompt() + `
+
+[Token Conservation & Codex Level Performance]
+1. Be extremely concise. Avoid conversational filler, preambles, and lengthy explanations.
+2. Write minimal, precise search-and-replace patches using the \`patch_workspace_file\` tool. Never rewrite or output the entire file content if only a small part changes.
+3. When writing code, write only the modified code blocks, comments, or diffs. Avoid outputting unchanged sections.
+4. Focus on completing tasks with the fewest tool calls and tokens possible, matching the speed and density of Codex CLI.
+`;
     } else {
       // Plan Mode (useAgent === false)
       agentPrompt = `[Agentic Mode (Plan)]
@@ -1721,7 +1867,6 @@ You have a massive 1,000,000 (1M) token context window memory. You can read, pro
   }
 
   // Load Balancing and Disaster Recovery Fallback Loop
-  const resolvedTarget = resolveModel(body.model);
   const mainProviderId = resolvedTarget.provider.id;
   const fallbackIds = loadConfig().fallbackProviderIds || [];
   const providersToTry = [mainProviderId, ...fallbackIds.filter(id => id !== mainProviderId)];
@@ -1937,6 +2082,7 @@ async function streamSSE(
 // ---- Fallback pass-through ----
 
 app.all("/v1/*", async (req, res) => {
+  req.socket.setTimeout(0);
   const active = getActiveProvider();
   const apiKey = getApiKey(active.id);
   const targetUrl = active.baseUrl + req.url;
@@ -2016,6 +2162,84 @@ interface AppInfo {
   isCustomPath?: boolean;
 }
 
+function findFromRegistry(keyPath: string): string {
+  try {
+    const output = execSync(`reg query "${keyPath}" /ve`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const lines = output.split("\n");
+    for (const line of lines) {
+      if (line.includes("REG_SZ")) {
+        const parts = line.split("REG_SZ");
+        if (parts.length > 1) {
+          let cmd = parts[1].trim();
+          if (cmd.startsWith('"')) {
+            const nextQuote = cmd.indexOf('"', 1);
+            if (nextQuote > 0) {
+              cmd = cmd.substring(1, nextQuote);
+            }
+          } else {
+            const space = cmd.indexOf(" ");
+            if (space > 0) {
+              cmd = cmd.substring(0, space);
+            }
+          }
+          if (fs.existsSync(cmd)) {
+            return cmd;
+          }
+        }
+      }
+    }
+  } catch (e) {}
+  return "";
+}
+
+function findFromUninstallRegistry(appName: string): string {
+  const roots = [
+    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    "HKLM\\Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
+  ];
+  for (const root of roots) {
+    try {
+      const output = execSync(`reg query "${root}" /s /f "${appName}"`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      const lines = output.split("\n");
+      for (const line of lines) {
+        if (line.trim().startsWith("HKEY_")) {
+          const keyPath = line.trim();
+          try {
+            const locOut = execSync(`reg query "${keyPath}" /v "InstallLocation"`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+            const linesL = locOut.split("\n");
+            for (const lL of linesL) {
+              if (lL.includes("REG_SZ")) {
+                const p = lL.split("REG_SZ")[1].trim();
+                if (p && fs.existsSync(p)) return p;
+              }
+            }
+          } catch(e) {}
+          try {
+            const unOut = execSync(`reg query "${keyPath}" /v "UninstallString"`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+            const linesU = unOut.split("\n");
+            for (const lU of linesU) {
+              if (lU.includes("REG_SZ")) {
+                let un = lU.split("REG_SZ")[1].trim();
+                if (un.startsWith('"')) {
+                  const q = un.indexOf('"', 1);
+                  if (q > 0) un = un.substring(1, q);
+                } else {
+                  const s = un.indexOf(" ");
+                  if (s > 0) un = un.substring(0, s);
+                }
+                const dir = path.dirname(un);
+                if (dir && fs.existsSync(dir)) return dir;
+              }
+            }
+          } catch(e) {}
+        }
+      }
+    } catch(e) {}
+  }
+  return "";
+}
+
 function findExe(basePaths: string[], patterns: string[]) {
   for (const bp of basePaths) {
     for (const pat of patterns) {
@@ -2054,6 +2278,17 @@ function scanApps() {
   const programFiles = process.env["ProgramFiles"] || "C:\\Program Files";
   const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
 
+  const drives = ["C:", "D:", "E:", "F:"];
+  const programDirs: string[] = [];
+  for (const drive of drives) {
+    if (fs.existsSync(drive + "\\")) {
+      programDirs.push(drive + "\\Program Files");
+      programDirs.push(drive + "\\Program Files (x86)");
+      programDirs.push(drive + "\\Programs");
+      programDirs.push(drive);
+    }
+  }
+
   // Codex CLI - check PATH and auto-updated binary directory
   let codexCli = false; let codexPath = "";
   const codexBinPath = localApp + "\\OpenAI\\Codex\\bin\\codex.exe";
@@ -2062,18 +2297,21 @@ function scanApps() {
   apps.push({ id: "codex-cli", name: "Codex CLI", icon: "terminal", installed: codexCli, path: codexPath, running: procs.toLowerCase().includes("codex"), description: "OpenAI Codex command-line interface", type: "cli" });
 
   // Codex Desktop - scan MSIX packages in WindowsApps
-  let codexDesktopPath = "";
-  const windowsApps = programFiles + "\\WindowsApps";
-  try {
-    if (fs.existsSync(windowsApps)) {
-      const entries = fs.readdirSync(windowsApps);
-      const codexDir = entries.find((e: string) => e.startsWith("OpenAI.Codex_"));
-      if (codexDir) {
-        const candidate = windowsApps + "\\" + codexDir + "\\app\\Codex.exe";
-        if (fs.existsSync(candidate)) codexDesktopPath = candidate;
+  let codexDesktopPath = findFromRegistry("HKCU\\Software\\Classes\\openai-codex\\shell\\open\\command") || 
+                         findFromRegistry("HKLM\\Software\\Classes\\openai-codex\\shell\\open\\command");
+  if (!codexDesktopPath) {
+    const windowsApps = programFiles + "\\WindowsApps";
+    try {
+      if (fs.existsSync(windowsApps)) {
+        const entries = fs.readdirSync(windowsApps);
+        const codexDir = entries.find((e: string) => e.startsWith("OpenAI.Codex_"));
+        if (codexDir) {
+          const candidate = windowsApps + "\\" + codexDir + "\\app\\Codex.exe";
+          if (fs.existsSync(candidate)) codexDesktopPath = candidate;
+        }
       }
-    }
-  } catch(e) { log("debug", "Failed to scan WindowsApps for Codex:", e); }
+    } catch(e) { log("debug", "Failed to scan WindowsApps for Codex:", e); }
+  }
   // Fallback: check AppExecutionAliases
   if (!codexDesktopPath) {
     try {
@@ -2085,14 +2323,20 @@ function scanApps() {
   }
   // Fallback: local install paths
   if (!codexDesktopPath) {
-    const fallbacks = [
-      findInFolder(localApp + "\\codex", "Codex.exe"),
-      findInFolder(localApp + "\\Codex", "Codex.exe"),
-      findInFolder(localApp + "\\openai-codex", "Codex.exe"),
-      findInFolder(localApp + "\\Programs\\codex", "Codex.exe"),
-      findInFolder(localApp + "\\Programs\\Codex", "Codex.exe"),
+    const searchDirs = [
+      ...programDirs.map(d => d + "\\codex"),
+      ...programDirs.map(d => d + "\\Codex"),
+      ...programDirs.map(d => d + "\\openai-codex"),
+      localApp + "\\codex",
+      localApp + "\\Codex",
+      localApp + "\\openai-codex",
+      localApp + "\\Programs\\codex",
+      localApp + "\\Programs\\Codex",
     ];
-    for (const p of fallbacks) { if (p) { codexDesktopPath = p; break; } }
+    for (const d of searchDirs) {
+      const p = findInFolder(d, "Codex.exe");
+      if (p) { codexDesktopPath = p; break; }
+    }
   }
   apps.push({ id: "codex-desktop", name: "Codex Desktop", icon: "monitor", installed: !!codexDesktopPath, path: codexDesktopPath, running: procs.includes("Codex") || procs.includes("codex"), description: "OpenAI Codex desktop application", type: "desktop" });
 
@@ -2102,17 +2346,21 @@ function scanApps() {
   apps.push({ id: "claude-cli", name: "Claude CLI", icon: "terminal", installed: claudeCli, path: claudePath, running: procs.toLowerCase().includes("claude"), description: "Anthropic Claude command-line interface", type: "cli" });
 
   // Claude Desktop - scan MSIX packages in WindowsApps
-  let claudeDesktopPath = "";
-  try {
-    if (fs.existsSync(windowsApps)) {
-      const entries = fs.readdirSync(windowsApps);
-      const claudeDir = entries.find((e: string) => e.startsWith("Claude_"));
-      if (claudeDir) {
-        const candidate = windowsApps + "\\" + claudeDir + "\\app\\claude.exe";
-        if (fs.existsSync(candidate)) claudeDesktopPath = candidate;
+  let claudeDesktopPath = findFromRegistry("HKCU\\Software\\Classes\\claude\\shell\\open\\command") ||
+                         findFromRegistry("HKLM\\Software\\Classes\\claude\\shell\\open\\command");
+  if (!claudeDesktopPath) {
+    const windowsApps = programFiles + "\\WindowsApps";
+    try {
+      if (fs.existsSync(windowsApps)) {
+        const entries = fs.readdirSync(windowsApps);
+        const claudeDir = entries.find((e: string) => e.startsWith("Claude_"));
+        if (claudeDir) {
+          const candidate = windowsApps + "\\" + claudeDir + "\\app\\claude.exe";
+          if (fs.existsSync(candidate)) claudeDesktopPath = candidate;
+        }
       }
-    }
-  } catch(e) { log("debug", "Failed to scan WindowsApps for Claude:", e); }
+    } catch(e) { log("debug", "Failed to scan WindowsApps for Claude:", e); }
+  }
   // Fallback: check AppExecutionAliases
   if (!claudeDesktopPath) {
     try {
@@ -2124,14 +2372,28 @@ function scanApps() {
   }
   // Fallback: local install paths
   if (!claudeDesktopPath) {
-    const fallbacks = [
+    const searchPaths = [
       localApp + "\\Claude\\Claude.exe",
       localApp + "\\Programs\\Claude\\Claude.exe",
-      programFiles + "\\Claude\\Claude.exe",
-      findInFolder(localApp + "\\Claude", "Claude.exe"),
-      findInFolder(localApp + "\\claude-desktop", "Claude.exe"),
+      localApp + "\\Programs\\claude\\Claude.exe",
+      ...programDirs.map(d => d + "\\Claude\\Claude.exe"),
+      ...programDirs.map(d => d + "\\claude-desktop\\Claude.exe"),
     ];
-    for (const p of fallbacks) { if (p && fs.existsSync(p)) { claudeDesktopPath = p; break; } }
+    for (const p of searchPaths) { if (fs.existsSync(p)) { claudeDesktopPath = p; break; } }
+  }
+  if (!claudeDesktopPath) {
+    const searchDirs = [
+      localApp + "\\Claude",
+      localApp + "\\claude-desktop",
+      localApp + "\\Programs\\Claude",
+      localApp + "\\Programs\\claude",
+      ...programDirs.map(d => d + "\\Claude"),
+      ...programDirs.map(d => d + "\\claude-desktop"),
+    ];
+    for (const d of searchDirs) {
+      const p = findInFolder(d, "Claude.exe");
+      if (p) { claudeDesktopPath = p; break; }
+    }
   }
   apps.push({ id: "claude-desktop", name: "Claude Desktop", icon: "message-square", installed: !!claudeDesktopPath, path: claudeDesktopPath, running: procs.includes("Claude"), description: "Anthropic Claude desktop application", type: "desktop" });
 
@@ -2143,34 +2405,72 @@ function scanApps() {
   // OpenCode
   let opencode = false; let opencodePath = "";
   try { opencodePath = execSync("where opencode 2>nul", { encoding: "utf-8" }).trim().split("\n")[0]; opencode = true; } catch(e) { log("debug", "OpenCode not found in PATH"); }
-  const opencodeDesktopPath = findExe([
-    localApp + "\\ai.opencode.desktop", 
-    localApp + "\\Programs\\opencode",
-    localApp + "\\Programs\\OpenCode",
-    programFiles + "\\OpenCode",
-    programFilesX86 + "\\OpenCode"
-  ], ["OpenCode.exe", "opencode.exe"]);
+  
+  let opencodeDesktopPath = findFromUninstallRegistry("OpenCode") || findFromUninstallRegistry("OpenCode 1.15.10");
+  if (opencodeDesktopPath && fs.existsSync(path.join(opencodeDesktopPath, "OpenCode.exe"))) {
+    opencodeDesktopPath = path.join(opencodeDesktopPath, "OpenCode.exe");
+  } else {
+    opencodeDesktopPath = "";
+  }
+  if (!opencodeDesktopPath) {
+    const searchPaths = [
+      localApp + "\\ai.opencode.desktop\\OpenCode.exe",
+      localApp + "\\Programs\\opencode\\OpenCode.exe",
+      localApp + "\\Programs\\OpenCode\\OpenCode.exe",
+      ...programDirs.map(d => d + "\\OpenCode\\OpenCode.exe"),
+      ...programDirs.map(d => d + "\\opencode\\OpenCode.exe"),
+      ...programDirs.map(d => d + "\\OpenCode\\opencode.exe"),
+      ...programDirs.map(d => d + "\\opencode\\opencode.exe"),
+    ];
+    for (const p of searchPaths) { if (fs.existsSync(p)) { opencodeDesktopPath = p; break; } }
+  }
   apps.push({ id: "opencode-cli", name: "OpenCode CLI", icon: "terminal", installed: opencode, path: opencodePath, running: procs.toLowerCase().includes("opencode"), description: "OpenCode AI coding agent CLI", type: "cli" });
   apps.push({ id: "opencode-desktop", name: "OpenCode Desktop", icon: "monitor", installed: !!opencodeDesktopPath, path: opencodeDesktopPath, running: procs.includes("OpenCode"), description: "OpenCode desktop application", type: "desktop" });
 
   // Cursor
-  const cursorPath = findExe([
-    localApp + "\\Programs\\cursor",
-    localApp + "\\Programs\\Cursor",
-    programFiles + "\\Cursor",
-    programFilesX86 + "\\Cursor"
-  ], ["Cursor.exe"]);
+  let cursorPath = findFromRegistry("HKCU\\Software\\Classes\\cursor\\shell\\open\\command") || 
+                   findFromRegistry("HKLM\\Software\\Classes\\cursor\\shell\\open\\command") ||
+                   findFromRegistry("HKCU\\Software\\Classes\\Applications\\Cursor.exe\\shell\\open\\command") ||
+                   findFromRegistry("HKLM\\Software\\Classes\\Applications\\Cursor.exe\\shell\\open\\command") ||
+                   findFromUninstallRegistry("Cursor");
+  if (cursorPath && fs.existsSync(path.join(cursorPath, "Cursor.exe"))) {
+    cursorPath = path.join(cursorPath, "Cursor.exe");
+  } else if (cursorPath && !cursorPath.endsWith("Cursor.exe")) {
+    cursorPath = "";
+  }
+  if (!cursorPath) {
+    const searchPaths = [
+      localApp + "\\Programs\\cursor\\Cursor.exe",
+      localApp + "\\Programs\\Cursor\\Cursor.exe",
+      ...programDirs.map(d => d + "\\Cursor\\Cursor.exe"),
+      ...programDirs.map(d => d + "\\cursor\\Cursor.exe"),
+    ];
+    for (const p of searchPaths) { if (fs.existsSync(p)) { cursorPath = p; break; } }
+  }
   apps.push({ id: "cursor", name: "Cursor", icon: "code", installed: !!cursorPath, path: cursorPath, running: procs.includes("Cursor"), description: "AI-powered code editor", type: "desktop" });
 
   // Trae
-  const traePath = findExe([
-    localApp + "\\Programs\\trae", 
-    localApp + "\\Programs\\Trae",
-    programFiles + "\\Trae",
-    programFiles + "\\trae",
-    programFilesX86 + "\\Trae",
-    programFilesX86 + "\\trae"
-  ], ["Trae.exe", "trae.exe"]);
+  let traePath = findFromRegistry("HKCU\\Software\\Classes\\trae\\shell\\open\\command") || 
+                 findFromRegistry("HKLM\\Software\\Classes\\trae\\shell\\open\\command") ||
+                 findFromRegistry("HKCU\\Software\\Classes\\Applications\\Trae.exe\\shell\\open\\command") ||
+                 findFromRegistry("HKLM\\Software\\Classes\\Applications\\Trae.exe\\shell\\open\\command") ||
+                 findFromUninstallRegistry("Trae");
+  if (traePath && fs.existsSync(path.join(traePath, "Trae.exe"))) {
+    traePath = path.join(traePath, "Trae.exe");
+  } else if (traePath && !traePath.endsWith("Trae.exe") && !traePath.endsWith("trae.exe")) {
+    traePath = "";
+  }
+  if (!traePath) {
+    const searchPaths = [
+      localApp + "\\Programs\\trae\\Trae.exe",
+      localApp + "\\Programs\\Trae\\Trae.exe",
+      localApp + "\\Programs\\trae\\trae.exe",
+      localApp + "\\Programs\\Trae\\trae.exe",
+      ...programDirs.map(d => d + "\\Trae\\Trae.exe"),
+      ...programDirs.map(d => d + "\\trae\\trae.exe"),
+    ];
+    for (const p of searchPaths) { if (fs.existsSync(p)) { traePath = p; break; } }
+  }
   apps.push({ id: "trae", name: "Trae", icon: "code", installed: !!traePath, path: traePath, running: procs.includes("Trae"), description: "ByteDance AI code editor", type: "desktop" });
 
   // VS Code
@@ -2180,24 +2480,47 @@ function scanApps() {
     if (vscodePath && fs.existsSync(vscodePath)) vscode = true; 
   } catch(e) { log("debug", "VS Code not found in PATH"); }
   if (!vscode) {
-    vscodePath = findExe([
-      localApp + "\\Programs\\Microsoft VS Code",
-      programFiles + "\\Microsoft VS Code",
-      programFilesX86 + "\\Microsoft VS Code",
-      localApp + "\\Programs\\Microsoft VS Code Insiders",
-      programFiles + "\\Microsoft VS Code Insiders",
-      programFilesX86 + "\\Microsoft VS Code Insiders"
-    ], ["Code.exe", "Code - Insiders.exe"]);
-    if (vscodePath) vscode = true;
+    vscodePath = findFromRegistry("HKCU\\Software\\Classes\\vscode\\shell\\open\\command") || 
+                 findFromRegistry("HKLM\\Software\\Classes\\vscode\\shell\\open\\command") ||
+                 findFromRegistry("HKCU\\Software\\Classes\\Applications\\Code.exe\\shell\\open\\command") ||
+                 findFromRegistry("HKLM\\Software\\Classes\\Applications\\Code.exe\\shell\\open\\command") ||
+                 findFromUninstallRegistry("Visual Studio Code") ||
+                 findFromUninstallRegistry("Microsoft Visual Studio Code");
+    if (vscodePath && fs.existsSync(path.join(vscodePath, "Code.exe"))) {
+      vscodePath = path.join(vscodePath, "Code.exe");
+      vscode = true;
+    } else if (vscodePath && vscodePath.endsWith("Code.exe")) {
+      vscode = true;
+    } else {
+      vscodePath = "";
+    }
+  }
+  if (!vscode) {
+    const searchPaths = [
+      localApp + "\\Programs\\Microsoft VS Code\\Code.exe",
+      localApp + "\\Programs\\Microsoft VS Code Insiders\\Code - Insiders.exe",
+      ...programDirs.map(d => d + "\\Microsoft VS Code\\Code.exe"),
+      ...programDirs.map(d => d + "\\Microsoft VS Code Insiders\\Code - Insiders.exe"),
+    ];
+    for (const p of searchPaths) { if (fs.existsSync(p)) { vscodePath = p; vscode = true; break; } }
   }
   apps.push({ id: "vscode", name: "VS Code", icon: "file-code", installed: vscode, path: vscodePath, running: procs.includes("Code"), description: "Visual Studio Code editor", type: "desktop" });
 
   // Antigravity
-  const antigravityPath = findExe([
-    localApp + "\\Programs\\antigravity",
-    programFiles + "\\Antigravity",
-    programFilesX86 + "\\Antigravity"
-  ], ["Antigravity.exe"]);
+  let antigravityPath = findFromUninstallRegistry("Antigravity");
+  if (antigravityPath && fs.existsSync(path.join(antigravityPath, "Antigravity.exe"))) {
+    antigravityPath = path.join(antigravityPath, "Antigravity.exe");
+  } else {
+    antigravityPath = "";
+  }
+  if (!antigravityPath) {
+    const searchPaths = [
+      localApp + "\\Programs\\antigravity\\Antigravity.exe",
+      ...programDirs.map(d => d + "\\Antigravity\\Antigravity.exe"),
+      ...programDirs.map(d => d + "\\antigravity\\Antigravity.exe"),
+    ];
+    for (const p of searchPaths) { if (fs.existsSync(p)) { antigravityPath = p; break; } }
+  }
   apps.push({ id: "antigravity", name: "Antigravity", icon: "monitor", installed: !!antigravityPath, path: antigravityPath, running: procs.includes("Antigravity"), description: "Antigravity AI assistant", type: "desktop" });
 
   // Cline
@@ -2277,6 +2600,169 @@ function scanApps() {
 
   return apps;
 }
+
+app.post("/api/git/status", (req, res) => {
+  try {
+    const workspacePath = req.body.cwd || req.body.workspacePath || _BASE_DIR;
+    if (!fs.existsSync(workspacePath)) {
+      return res.status(400).json({ error: "Workspace directory does not exist" });
+    }
+    
+    let statusOut = "";
+    try {
+      statusOut = execSync("git status --porcelain", { cwd: workspacePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    } catch (e) {
+      return res.json({ branch: "—", modified: 0, untracked: 0, lastCommit: "—", modifiedFiles: [] });
+    }
+    
+    let branchOut = "";
+    try {
+      branchOut = execSync("git branch --show-current", { cwd: workspacePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch (e) {}
+    
+    let lastCommit = "";
+    try {
+      lastCommit = execSync('git log -1 --format="%h - %s (%cr)"', { cwd: workspacePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch (e) {}
+    
+    const lines = statusOut.split("\n").filter(Boolean);
+    const modifiedFiles = lines.map(line => {
+      const status = line.substring(0, 2);
+      const filepath = line.substring(3).trim();
+      return { status, filepath };
+    });
+    
+    const modifiedCount = modifiedFiles.filter(f => !f.status.includes("?")).length;
+    const untrackedCount = modifiedFiles.filter(f => f.status.includes("?")).length;
+    
+    res.json({
+      branch: branchOut || "master",
+      modified: modifiedCount,
+      untracked: untrackedCount,
+      lastCommit: lastCommit || "No commits yet",
+      modifiedFiles
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/git/commit", (req, res) => {
+  try {
+    const { workspacePath, message } = req.body;
+    const targetPath = workspacePath || _BASE_DIR;
+    if (!message) return res.status(400).json({ error: "Commit message is required" });
+    if (!fs.existsSync(targetPath)) return res.status(400).json({ error: "Workspace path does not exist" });
+    
+    execSync("git add .", { cwd: targetPath });
+    
+    // Use temp file for commit message to avoid shell injection
+    const tmpMsgFile = path.join(os.tmpdir(), `orca-commit-msg-${Date.now()}.txt`);
+    fs.writeFileSync(tmpMsgFile, message, "utf8");
+    let commitOut = "";
+    try {
+      commitOut = execSync(`git commit -F "${tmpMsgFile}"`, { cwd: targetPath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    } finally {
+      try { fs.unlinkSync(tmpMsgFile); } catch (e) {}
+    }
+    
+    log("info", `[Git] Committed changes in ${targetPath}: ${message}`);
+    res.json({ ok: true, output: commitOut });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/open-file", (req, res) => {
+  try {
+    const { filepath } = req.body;
+    if (!filepath) return res.status(400).json({ error: "filepath is required" });
+    if (!fs.existsSync(filepath)) {
+      return res.status(400).json({ error: `File not found: ${filepath}` });
+    }
+    
+    const child = spawn("cmd.exe", ["/c", "start", "", filepath], { detached: true, stdio: "ignore" });
+    child.unref();
+    
+    log("info", `[File] Opened file: ${filepath}`);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/workspace/list", (req, res) => {
+  try {
+    const { workspacePath, subPath } = req.body;
+    const base = workspacePath || _BASE_DIR;
+    if (!fs.existsSync(base)) {
+      return res.status(400).json({ error: "Workspace path does not exist" });
+    }
+    const targetDir = subPath ? path.join(base, subPath) : base;
+    
+    // Safety check: prevent path traversal outside workspace
+    const relative = path.relative(base, targetDir);
+    if (relative.startsWith("..") && !path.isAbsolute(relative)) {
+      return res.status(400).json({ error: "Access denied" });
+    }
+    
+    if (!fs.existsSync(targetDir)) {
+      return res.status(404).json({ error: "Directory not found" });
+    }
+    
+    const items = fs.readdirSync(targetDir, { withFileTypes: true });
+    
+    const ignoredDirs = [".git", "node_modules", "dist", "build", "release", "out", ".venv", "env", "bin", "obj"];
+    const ignoredFiles = [".DS_Store", "thumbs.db"];
+    
+    const result = items
+      .filter(item => {
+        if (item.isDirectory() && ignoredDirs.includes(item.name)) return false;
+        if (item.isFile() && ignoredFiles.includes(item.name)) return false;
+        return true;
+      })
+      .map(item => {
+        const itemPath = path.join(targetDir, item.name);
+        const relPath = path.relative(base, itemPath);
+        return {
+          name: item.name,
+          relativePath: relPath.replace(/\\/g, "/"),
+          absolutePath: itemPath.replace(/\\/g, "/"),
+          isDirectory: item.isDirectory(),
+          size: item.isFile() ? fs.statSync(itemPath).size : undefined
+        };
+      })
+      .sort((a, b) => {
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      
+    res.json({ ok: true, items: result });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/workspace/file-content", (req, res) => {
+  try {
+    const { filepath } = req.body;
+    if (!filepath) return res.status(400).json({ error: "filepath is required" });
+    if (!fs.existsSync(filepath)) {
+      return res.status(404).json({ error: "File not found" });
+    }
+    
+    const stats = fs.statSync(filepath);
+    if (stats.size > 2 * 1024 * 1024) {
+      return res.status(400).json({ error: "File is too large to preview (> 2MB)" });
+    }
+    
+    const content = fs.readFileSync(filepath, "utf8");
+    res.json({ ok: true, content });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Cache for scanApps to avoid blocking event loop
 let _appsCache: { data: AppInfo[]; time: number } | null = null;

@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { ArrowUp, ChevronDown, Sparkles, Bot, User, Settings2, Trash2, FileText, X, Square, Terminal, Loader, CheckCircle, Check, CornerUpLeft, Copy, Brain, Eye, Play, Zap, PanelRightOpen, PanelRightClose, GitBranch, FolderGit2, Activity, Clock, Code2, Download, Upload } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { ArrowUp, ChevronDown, Sparkles, Bot, User, Settings2, Trash2, FileText, X, Square, Terminal, Loader, CheckCircle, Check, CornerUpLeft, Copy, Brain, Eye, Play, Zap, PanelRightOpen, PanelRightClose, GitBranch, FolderGit2, Activity, Clock, Download, Upload, Folder, FolderOpen, Search, Paperclip } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -211,12 +211,180 @@ export default function Chat({ lang }: { lang: Language }) {
   });
   const [modifiedFiles, setModifiedFiles] = useState<{path: string; action: string; time: string}[]>([]);
   const [gitInfo, setGitInfo] = useState<{
-    branch: string; changes: number; untracked: number; status: string; lastCommit: string;
-  }>({ branch: '—', changes: 0, untracked: 0, status: 'clean', lastCommit: '—' });
+    branch: string;
+    changes: number;
+    untracked: number;
+    status: string;
+    lastCommit: string;
+    modifiedFiles?: { status: string; filepath: string }[];
+  }>({ branch: '—', changes: 0, untracked: 0, status: 'clean', lastCommit: '—', modifiedFiles: [] });
   const [contextTokens, setContextTokens] = useState({ used: 0, total: 0, percent: 0 });
+  
+  const [commitMessage, setCommitMessage] = useState('');
+  const [committing, setCommitting] = useState(false);
+
+  const handleOpenFile = async (filePath: string) => {
+    try {
+      let fullPath = filePath;
+      const pathIsAbsolute = (p: string) => /^[a-zA-Z]:/.test(p) || p.startsWith('/') || p.startsWith('\\');
+      const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
+      if (activeWorkspace?.path && !pathIsAbsolute(filePath)) {
+        const separator = activeWorkspace.path.includes('\\') ? '\\' : '/';
+        fullPath = `${activeWorkspace.path}${separator}${filePath}`;
+      }
+      await api.post('/api/open-file', { filepath: fullPath });
+    } catch (err) {
+      console.error("Failed to open file:", err);
+      alert(lang === 'en' ? 'Failed to open file.' : '打开文件失败。');
+    }
+  };
+
+  // Workspace explorer tree types & state
+  interface WorkspaceItem {
+    name: string;
+    relativePath: string;
+    absolutePath: string;
+    isDirectory: boolean;
+    size?: number;
+  }
+  const [folderContents, setFolderContents] = useState<Record<string, WorkspaceItem[]>>({});
+  const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({});
+  const [fileSearchQuery, setFileSearchQuery] = useState('');
+  const [loadingFolders, setLoadingFolders] = useState<Record<string, boolean>>({});
+  const [modifiedFilesExpanded, setModifiedFilesExpanded] = useState(true);
+  const [workspaceFilesExpanded, setWorkspaceFilesExpanded] = useState(true);
+
+  const fetchFolderContents = async (subPath: string) => {
+    const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
+    if (!activeWorkspace?.path) return;
+    
+    setLoadingFolders(prev => ({ ...prev, [subPath]: true }));
+    try {
+      const response = await api.post('/api/workspace/list', {
+        workspacePath: activeWorkspace.path,
+        subPath
+      });
+      if (response.data && response.data.ok) {
+        setFolderContents(prev => ({
+          ...prev,
+          [subPath]: response.data.items
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to fetch folder contents:', err);
+    } finally {
+      setLoadingFolders(prev => ({ ...prev, [subPath]: false }));
+    }
+  };
+
+  const toggleFolder = async (subPath: string) => {
+    const isExpanded = !!expandedPaths[subPath];
+    setExpandedPaths(prev => ({
+      ...prev,
+      [subPath]: !isExpanded
+    }));
+    
+    if (!isExpanded && !folderContents[subPath]) {
+      await fetchFolderContents(subPath);
+    }
+  };
+
+  const handleAttachFile = async (item: WorkspaceItem) => {
+    try {
+      const response = await api.post('/api/workspace/file-content', { filepath: item.absolutePath });
+      if (response.data && response.data.ok) {
+        setAttachedFile({
+          name: item.name,
+          content: response.data.content
+        });
+      } else {
+        alert(lang === 'en' ? 'Failed to read file: ' + (response.data.error || 'unknown error') : '读取文件失败：' + (response.data.error || '未知错误'));
+      }
+    } catch (err: any) {
+      alert(lang === 'en' ? 'Failed to read file: ' + err.message : '读取文件失败：' + err.message);
+    }
+  };
+
+  const getVisibleItems = () => {
+    const list: { item: WorkspaceItem; depth: number }[] = [];
+    const addFolder = (subPath: string, depth: number) => {
+      const items = folderContents[subPath] || [];
+      for (const item of items) {
+        list.push({ item, depth });
+        if (item.isDirectory && expandedPaths[item.relativePath]) {
+          addFolder(item.relativePath, depth + 1);
+        }
+      }
+    };
+    addFolder("", 0);
+    return list;
+  };
+
+  const getFilteredItems = () => {
+    const query = fileSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return getVisibleItems();
+    }
+    const matches: { item: WorkspaceItem; depth: number }[] = [];
+    const seen = new Set<string>();
+    Object.keys(folderContents).forEach(subPath => {
+      (folderContents[subPath] || []).forEach(item => {
+        if (!item.isDirectory && item.name.toLowerCase().includes(query)) {
+          if (!seen.has(item.absolutePath)) {
+            seen.add(item.absolutePath);
+            matches.push({ item, depth: 0 });
+          }
+        }
+      });
+    });
+    return matches;
+  };
+
+  useEffect(() => {
+    if (activeWorkspaceId && rightSidebarTab === 'files') {
+      setFolderContents({});
+      setExpandedPaths({});
+      setFileSearchQuery('');
+      fetchFolderContents("");
+    }
+  }, [activeWorkspaceId, rightSidebarTab]);
+
+  const handleGitCommit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!commitMessage.trim()) return;
+    setCommitting(true);
+    const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
+    try {
+      const res = await api.post('/api/git/commit', {
+        workspacePath: activeWorkspace?.path,
+        message: commitMessage
+      });
+      if (res.data && res.data.ok) {
+        setCommitMessage('');
+        alert(lang === 'en' ? 'Changes committed successfully!' : '提交成功！');
+        // Refresh git info immediately
+        const statusRes = await api.post('/api/git/status', { cwd: activeWorkspace?.path });
+        if (statusRes.data) {
+          setGitInfo({
+            branch: statusRes.data.branch || '—',
+            changes: statusRes.data.modified || 0,
+            untracked: statusRes.data.untracked || 0,
+            status: statusRes.data.modifiedFiles && statusRes.data.modifiedFiles.length > 0 ? 'dirty' : 'clean',
+            lastCommit: statusRes.data.lastCommit || '—',
+            modifiedFiles: statusRes.data.modifiedFiles || []
+          });
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert((lang === 'en' ? 'Failed to commit: ' : '提交失败: ') + (err.response?.data?.error || err.message));
+    } finally {
+      setCommitting(false);
+    }
+  };
 
   // Track tool execution for file monitoring
-  const trackFileOperation = (toolName: string, content: string) => {
+  const trackFileOperation = useCallback((toolName: string, content: string) => {
     const fileOps = ['write_to_file', 'write', 'replace_in_file', 'edit_file', 'create_file'];
     if (fileOps.some(op => toolName.toLowerCase().includes(op.toLowerCase()))) {
       const fileMatch = content.match(/["']?([a-zA-Z0-9_\-/.\\]+\.\w{1,10})["']?/);
@@ -228,7 +396,7 @@ export default function Chat({ lang }: { lang: Language }) {
         });
       }
     }
-  };
+  }, []);
 
   const presets: Record<string, { name: string; systemPrompt: string }> = {
     standard: {
@@ -510,12 +678,13 @@ export default function Chat({ lang }: { lang: Language }) {
             branch: res.data.branch || '—',
             changes: res.data.modified || 0,
             untracked: res.data.untracked || 0,
-            status: (res.data.modified || 0) > 0 ? 'dirty' : 'clean',
-            lastCommit: res.data.lastCommit || '—'
+            status: res.data.modifiedFiles && res.data.modifiedFiles.length > 0 ? 'dirty' : 'clean',
+            lastCommit: res.data.lastCommit || '—',
+            modifiedFiles: res.data.modifiedFiles || []
           });
         }
       } catch {
-        setGitInfo({ branch: '—', changes: 0, untracked: 0, status: 'no-repo', lastCommit: '—' });
+        setGitInfo({ branch: '—', changes: 0, untracked: 0, status: 'no-repo', lastCommit: '—', modifiedFiles: [] });
       }
     };
     fetchGitInfo();
@@ -1382,60 +1551,11 @@ export default function Chat({ lang }: { lang: Language }) {
                     {msg.role === 'user' ? (
                       cleanThinkTags(msg.content)
                     ) : (
-                      <div className="space-y-4">
-                        {parseAssistantMessage(msg.content).map((block, idx) => {
-                          if (block.type === 'text') {
-                            return (
-                              <div key={idx} className="space-y-1">
-                                {parseTextWithCodeBlocksAndTasks(block.content).map((subBlock, sIdx) => {
-                                  if (subBlock.type === 'text') {
-                                    return (
-                                      <div key={sIdx} className="orca-markdown">
-                                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeSanitize]}>
-                                          {subBlock.content}
-                                        </ReactMarkdown>
-                                      </div>
-                                    );
-                                  } else if (subBlock.type === 'tasks' && subBlock.tasks) {
-                                    return (
-                                      <TaskListWidget 
-                                        key={sIdx}
-                                        tasks={subBlock.tasks}
-                                      />
-                                    );
-                                  } else {
-                                    return (
-                                      <CodeBlock 
-                                        key={sIdx} 
-                                        content={subBlock.content} 
-                                        language={subBlock.language} 
-                                      />
-                                    );
-                                  }
-                                })}
-                              </div>
-                            );
-                          } else if (block.type === 'think') {
-                            return (
-                              <ThinkingBlock 
-                                key={idx} 
-                                content={block.content} 
-                                status={block.status} 
-                                lang={lang}
-                              />
-                            );
-                          } else {
-                            (() => { trackFileOperation(block.toolName || '', block.content || ''); })();
-                            return (
-                              <ToolExecutionBlock 
-                                key={idx} 
-                                block={block} 
-                                lang={lang} 
-                              />
-                            );
-                          }
-                        })}
-                      </div>
+                      <MemoizedAssistantMessage 
+                        content={msg.content} 
+                        lang={lang} 
+                        onFileOp={trackFileOperation}
+                      />
                     )}
                   </div>
                 )}
@@ -1486,36 +1606,7 @@ export default function Chat({ lang }: { lang: Language }) {
           </button>
         )}
 
-        {/* Context Window Indicator */}
-        {activeChat && (
-          <div className="shrink-0 px-1">
-            <div className="flex items-center justify-between text-[10px] text-[var(--color-text-muted)] mb-1 px-0.5">
-              <div className="flex items-center gap-1">
-                <Activity className="w-3 h-3" />
-                <span>{lang === 'en' ? 'Context' : '上下文窗口'}</span>
-              </div>
-              <span className="font-mono">
-                {contextTokens.used.toLocaleString()} / {contextTokens.total.toLocaleString()} tokens
-                <span className="ml-1">({contextTokens.percent}%)</span>
-              </span>
-            </div>
-            <div className="w-full h-1.5 bg-gray-200 dark:bg-slate-700 rounded-full overflow-hidden">
-              <div 
-                className={`h-full rounded-full transition-all duration-500 ${
-                  contextTokens.percent > 85 ? 'bg-red-500' :
-                  contextTokens.percent > 60 ? 'bg-yellow-500' :
-                  'bg-emerald-500'
-                }`}
-                style={{ width: `${Math.max(1, contextTokens.percent)}%` }}
-              />
-            </div>
-            {contextTokens.percent > 85 && (
-              <div className="text-[10px] text-red-500 mt-0.5 px-0.5">
-                {lang === 'en' ? '⚠️ Context nearly full — consider summarizing or starting a new chat' : '⚠️ 上下文接近上限 — 建议总结或开启新会话'}
-              </div>
-            )}
-          </div>
-        )}
+              
 
         {/* Input box section */}
         <div className="shrink-0 flex flex-col gap-3">
@@ -1859,6 +1950,52 @@ export default function Chat({ lang }: { lang: Language }) {
                 )}
               </div>
 
+              {/* Circular Context Indicator */}
+              <div className="relative group">
+                <button 
+                  type="button"
+                  className="flex items-center gap-1.5 text-xs font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors bg-[var(--color-bg-hover)] px-2.5 py-1.5 rounded-lg shadow-sm cursor-pointer border border-transparent"
+                  title={`${lang === 'en' ? 'Context Window' : '上下文窗口'}: ${contextTokens.used.toLocaleString()} / ${contextTokens.total.toLocaleString()} tokens (${contextTokens.percent}%)`}
+                >
+                  <div className="relative w-4 h-4 flex items-center justify-center">
+                    <svg className="w-full h-full transform -rotate-90">
+                      <circle
+                        cx="8"
+                        cy="8"
+                        r="6"
+                        className="stroke-gray-200 dark:stroke-slate-700"
+                        strokeWidth="2"
+                        fill="none"
+                      />
+                      <circle
+                        cx="8"
+                        cy="8"
+                        r="6"
+                        className={`transition-all duration-500 ${
+                          contextTokens.percent > 85 ? 'stroke-red-500' :
+                          contextTokens.percent > 60 ? 'stroke-yellow-500' :
+                          'stroke-emerald-500'
+                        }`}
+                        strokeWidth="2"
+                        fill="none"
+                        strokeDasharray={2 * Math.PI * 6}
+                        strokeDashoffset={2 * Math.PI * 6 * (1 - contextTokens.percent / 100)}
+                      />
+                    </svg>
+                  </div>
+                  <span className="font-mono text-[10.5px]">{contextTokens.percent}%</span>
+                </button>
+                
+                {/* Tooltip on Hover */}
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-slate-900 text-white text-[10px] rounded-lg py-1.5 px-2.5 whitespace-nowrap z-50 shadow-md font-mono select-text text-left">
+                  <div>Used: {contextTokens.used.toLocaleString()}</div>
+                  <div>Total: {contextTokens.total.toLocaleString()}</div>
+                  {contextTokens.percent > 85 && (
+                    <div className="text-red-400 mt-1">{lang === 'en' ? '⚠️ Near Limit' : '⚠️ 接近上限'}</div>
+                  )}
+                </div>
+              </div>
+
             </div>
           )}
         </div>
@@ -2032,54 +2169,195 @@ export default function Chat({ lang }: { lang: Language }) {
               </div>
             )}
 
-            {/* Files Tab */}
+            {/* Files / Explorer Tab */}
             {rightSidebarTab === 'files' && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">
-                    {lang === 'en' ? 'Modified Files' : '已修改文件'}
+              <div className="flex flex-col h-full space-y-4 px-1 pb-4">
+                {/* File Search */}
+                <div className="relative shrink-0 mx-1">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-2.5 pointer-events-none text-[var(--color-text-muted)]">
+                    <Search className="w-3.5 h-3.5" />
                   </span>
-                  {modifiedFiles.length > 0 && (
+                  <input
+                    type="text"
+                    value={fileSearchQuery}
+                    onChange={(e) => setFileSearchQuery(e.target.value)}
+                    placeholder={lang === 'en' ? 'Search files...' : '搜索文件...'}
+                    className="w-full bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-lg pl-8 pr-7 py-1.5 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] outline-none focus:border-[var(--color-primary)]/40 focus:ring-1 focus:ring-[var(--color-primary)]/20 transition-all font-sans"
+                  />
+                  {fileSearchQuery && (
                     <button
-                      onClick={() => setModifiedFiles([])}
-                      className="text-[10px] text-gray-400 hover:text-red-500 transition-colors cursor-pointer"
+                      onClick={() => setFileSearchQuery('')}
+                      className="absolute inset-y-0 right-0 flex items-center pr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer"
                     >
-                      {lang === 'en' ? 'Clear' : '清除'}
+                      <X className="w-3 h-3" />
                     </button>
                   )}
                 </div>
-                {modifiedFiles.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-[200px] text-center px-4">
-                    <Code2 className="w-10 h-10 text-[var(--color-text-muted)] mb-3 opacity-40" />
-                    <p className="text-xs text-[var(--color-text-muted)]">
-                      {lang === 'en'
-                        ? 'Files modified during the session will appear here.'
-                        : '会话中修改的文件将在此显示。'}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-0.5">
-                    {modifiedFiles.map((file, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center gap-2 p-2 rounded-lg text-xs hover:bg-[var(--color-bg-hover)] transition-colors"
-                      >
-                        <FileText className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="font-mono text-[11px] text-[var(--color-text-primary)] truncate">
-                            {file.path}
-                          </div>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <span className="text-[10px] px-1.5 py-0.1 rounded bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-semibold">
-                              {file.action}
-                            </span>
-                            <span className="text-[10px] text-[var(--color-text-muted)]">{file.time}</span>
-                          </div>
-                        </div>
+
+                {/* Session Modified Files List */}
+                {!fileSearchQuery && (
+                  <div className="border-b border-[var(--color-border-base)] pb-3 shrink-0 mx-1">
+                    <div 
+                      onClick={() => setModifiedFilesExpanded(!modifiedFilesExpanded)}
+                      className="flex items-center justify-between text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider cursor-pointer hover:text-[var(--color-text-primary)] select-none mb-1.5"
+                    >
+                      <div className="flex items-center gap-1">
+                        <ChevronDown className={`w-3 h-3 transition-transform ${modifiedFilesExpanded ? '' : '-rotate-90'}`} />
+                        <span>{lang === 'en' ? 'Modified in Session' : '本会话已修改'}</span>
+                        {modifiedFiles.length > 0 && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500 text-white font-mono ml-1">
+                            {modifiedFiles.length}
+                          </span>
+                        )}
                       </div>
-                    ))}
+                      {modifiedFiles.length > 0 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setModifiedFiles([]);
+                          }}
+                          className="text-[10px] text-gray-400 hover:text-red-500 transition-colors cursor-pointer capitalize font-semibold normal-case"
+                        >
+                          {lang === 'en' ? 'Clear' : '清除'}
+                        </button>
+                      )}
+                    </div>
+
+                    {modifiedFilesExpanded && (
+                      <div className="space-y-0.5 max-h-[140px] overflow-y-auto pr-0.5">
+                        {modifiedFiles.length === 0 ? (
+                          <div className="text-[11px] text-[var(--color-text-muted)] italic py-1 px-4">
+                            {lang === 'en' ? 'No files modified yet' : '暂无修改文件'}
+                          </div>
+                        ) : (
+                          modifiedFiles.map((file, idx) => (
+                            <div
+                              key={idx}
+                              onClick={() => handleOpenFile(file.path)}
+                              className="flex items-center gap-2 p-1.5 rounded-lg text-xs hover:bg-[var(--color-bg-hover)] transition-colors cursor-pointer group/file"
+                            >
+                              <FileText className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <div className="font-mono text-[10.5px] text-[var(--color-text-primary)] truncate group-hover/file:text-[var(--color-primary)] transition-colors" title={file.path}>
+                                  {file.path}
+                                </div>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[9px] px-1 py-0.1 rounded bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-semibold font-mono">
+                                    {file.action}
+                                  </span>
+                                  <span className="text-[9px] text-[var(--color-text-muted)]">{file.time}</span>
+                                </div>
+                              </div>
+                              <Eye className="w-3 h-3 text-gray-400 opacity-0 group-hover/file:opacity-100 transition-opacity" />
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
+
+                {/* Workspace Files Explorer */}
+                <div className="flex-1 flex flex-col min-h-0 mx-1">
+                  <div 
+                    onClick={() => setWorkspaceFilesExpanded(!workspaceFilesExpanded)}
+                    className="flex items-center justify-between text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider cursor-pointer hover:text-[var(--color-text-primary)] select-none mb-1.5"
+                  >
+                    <div className="flex items-center gap-1">
+                      <ChevronDown className={`w-3 h-3 transition-transform ${workspaceFilesExpanded ? '' : '-rotate-90'}`} />
+                      <span>{lang === 'en' ? 'Workspace Explorer' : '项目资源管理器'}</span>
+                    </div>
+                  </div>
+
+                  {workspaceFilesExpanded && (
+                    <div className="flex-1 overflow-y-auto pr-0.5 space-y-0.5 font-mono text-[11.5px] select-none">
+                      {getFilteredItems().length === 0 ? (
+                        <div className="text-[11px] text-[var(--color-text-muted)] italic py-2 px-4">
+                          {lang === 'en' ? 'No files found' : '没有找到文件'}
+                        </div>
+                      ) : (
+                        getFilteredItems().map(({ item, depth }) => {
+                          const isExpanded = !!expandedPaths[item.relativePath];
+                          const isLoading = !!loadingFolders[item.relativePath];
+                          
+                          let iconColor = 'text-gray-400 dark:text-gray-500';
+                          if (item.isDirectory) {
+                            iconColor = 'text-blue-500 dark:text-blue-400';
+                          } else {
+                            const ext = item.name.split('.').pop()?.toLowerCase();
+                            if (ext === 'js' || ext === 'ts' || ext === 'tsx' || ext === 'jsx') {
+                              iconColor = 'text-amber-500 dark:text-amber-400';
+                            } else if (ext === 'css' || ext === 'html' || ext === 'scss') {
+                              iconColor = 'text-sky-500 dark:text-sky-400';
+                            } else if (ext === 'py' || ext === 'go' || ext === 'rs') {
+                              iconColor = 'text-emerald-500 dark:text-emerald-400';
+                            } else if (ext === 'md' || ext === 'json') {
+                              iconColor = 'text-purple-500 dark:text-purple-400';
+                            }
+                          }
+
+                          return (
+                            <div
+                              key={item.absolutePath}
+                              style={{ paddingLeft: `${depth * 10 + 4}px` }}
+                              onClick={() => item.isDirectory ? toggleFolder(item.relativePath) : handleOpenFile(item.absolutePath)}
+                              className="flex items-center justify-between py-1 px-1.5 rounded hover:bg-[var(--color-bg-hover)] transition-colors cursor-pointer group/item"
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                <span className="shrink-0">
+                                  {item.isDirectory ? (
+                                    isExpanded ? (
+                                      <FolderOpen className={`w-3.5 h-3.5 ${iconColor}`} />
+                                    ) : (
+                                      <Folder className={`w-3.5 h-3.5 ${iconColor}`} />
+                                    )
+                                  ) : (
+                                    <FileText className={`w-3.5 h-3.5 ${iconColor}`} />
+                                  )}
+                                </span>
+                                
+                                <span className="truncate text-[var(--color-text-secondary)] group-hover/item:text-[var(--color-text-primary)] transition-colors" title={item.name}>
+                                  {item.name}
+                                </span>
+                                
+                                {isLoading && (
+                                  <Loader className="w-3 h-3 text-[var(--color-primary)] animate-spin shrink-0" />
+                                )}
+                              </div>
+
+                              {!item.isDirectory && (
+                                <div className="flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-opacity pl-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleAttachFile(item);
+                                    }}
+                                    className="p-1 rounded hover:bg-[var(--color-bg-card)] text-[var(--color-text-muted)] hover:text-[var(--color-primary)] transition-colors cursor-pointer"
+                                    title={lang === 'en' ? 'Attach to prompt context' : '添加到输入上下文'}
+                                  >
+                                    <Paperclip className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenFile(item.absolutePath);
+                                    }}
+                                    className="p-1 rounded hover:bg-[var(--color-bg-card)] text-[var(--color-text-muted)] hover:text-emerald-500 transition-colors cursor-pointer"
+                                    title={lang === 'en' ? 'Open file locally' : '本地打开文件'}
+                                  >
+                                    <Eye className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -2118,22 +2396,83 @@ export default function Chat({ lang }: { lang: Language }) {
                     </div>
 
                     {/* Status Badge */}
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
                         gitInfo.status === 'clean'
                           ? 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300'
                           : 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300'
                       }`}>
                         {gitInfo.status === 'clean' ? '✓ Clean' : '● Dirty'}
                       </span>
-                      <span className="text-[10px] text-[var(--color-text-muted)]">
-                        {lang === 'en' ? 'Last commit' : '最近提交'}:
-                        <span className="font-mono ml-1">{gitInfo.lastCommit}</span>
+                      <span className="text-[10px] text-[var(--color-text-muted)] truncate max-w-[200px]" title={gitInfo.lastCommit}>
+                        {lang === 'en' ? 'Last commit' : '最近提交'}: {gitInfo.lastCommit}
                       </span>
                     </div>
 
+                    {/* Modified Files List in Git */}
+                    {gitInfo.modifiedFiles && gitInfo.modifiedFiles.length > 0 && (
+                      <div className="space-y-1.5 mt-2">
+                        <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider block">
+                          {lang === 'en' ? 'Changed Files' : '文件改动列表'}
+                        </span>
+                        <div className="max-h-36 overflow-y-auto space-y-1 pr-1 border border-[var(--color-border-base)] rounded-lg p-1.5 bg-white/40 dark:bg-slate-900/40">
+                          {gitInfo.modifiedFiles.map((file, idx) => {
+                            const isUntracked = file.status.includes('?');
+                            const isDeleted = file.status.includes('D');
+                            const isAdded = file.status.includes('A');
+                            
+                            let badgeColor = 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300';
+                            if (isUntracked) badgeColor = 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
+                            else if (isDeleted) badgeColor = 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-300';
+                            else if (isAdded) badgeColor = 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300';
+                            
+                            return (
+                              <div 
+                                key={idx} 
+                                onClick={() => handleOpenFile(file.filepath)}
+                                className="flex items-center justify-between text-[11px] font-mono py-1 px-1.5 hover:bg-[var(--color-bg-hover)] rounded cursor-pointer group/gitfile"
+                              >
+                                <span className="truncate flex-1 text-[var(--color-text-secondary)] mr-2 group-hover/gitfile:text-[var(--color-primary)] transition-colors" title={file.filepath}>
+                                  {file.filepath}
+                                </span>
+                                <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold shrink-0 ${badgeColor}`}>
+                                  {file.status.trim() || 'M'}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Git Commit Form */}
+                    {gitInfo.status === 'dirty' && (
+                      <form onSubmit={handleGitCommit} className="space-y-2 border-t border-[var(--color-border-base)] pt-3 mt-2">
+                        <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider block">
+                          {lang === 'en' ? 'Commit Changes' : '提交改动'}
+                        </span>
+                        <input
+                          type="text"
+                          value={commitMessage}
+                          onChange={(e) => setCommitMessage(e.target.value)}
+                          placeholder={lang === 'en' ? 'Commit message...' : '提交说明...'}
+                          required
+                          className="w-full bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-lg px-2.5 py-1.5 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] outline-none focus:border-[var(--color-primary)]/40 focus:ring-1 focus:ring-[var(--color-primary)]/20 transition-all font-sans"
+                        />
+                        <button
+                          type="submit"
+                          disabled={committing}
+                          className="w-full py-2 text-xs font-semibold rounded-lg bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-400 text-white transition-colors cursor-pointer text-center shadow-sm"
+                        >
+                          {committing 
+                            ? (lang === 'en' ? 'Committing...' : '提交中...') 
+                            : (lang === 'en' ? 'Stage & Commit' : '暂存并提交')}
+                        </button>
+                      </form>
+                    )}
+
                     {/* Quick Actions */}
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 border-t border-[var(--color-border-base)] pt-3 mt-2">
                       <button
                         onClick={() => {
                           setInput(input => input + (input ? ' ' : '') + (lang === 'en' ? 'Show me the git diff' : '请帮我查看当前的 git diff'));
@@ -2605,9 +2944,15 @@ function renderDiffContent(content: string, isRunning: boolean) {
   );
 }
 
-function ToolExecutionBlock({ block, lang }: { block: any; lang: string }) {
+function ToolExecutionBlock({ block, lang, onFileOp }: { block: any; lang: string; onFileOp?: (name: string, content: string) => void }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const isRunning = block.status === 'running';
+
+  useEffect(() => {
+    if (!isRunning && onFileOp) {
+      onFileOp(block.toolName || '', block.content || '');
+    }
+  }, [isRunning, block.toolName, block.content, onFileOp]);
 
   return (
     <div className="my-4 rounded-xl overflow-hidden shadow-md border border-[var(--color-border-base)] bg-gradient-to-br from-[var(--color-bg-card)] to-[var(--color-bg-base)] transition-all duration-300">
@@ -2680,3 +3025,89 @@ function ToolExecutionBlock({ block, lang }: { block: any; lang: string }) {
     </div>
   );
 }
+
+// MEMOIZED ASSISTANT MESSAGE COMPONENTS TO PREVENT UI CRASH
+interface AssistantMessageProps {
+  content: string;
+  lang: Language;
+  onFileOp: (toolName: string, content: string) => void;
+}
+
+const AssistantMessageContent = ({ content, lang, onFileOp }: AssistantMessageProps) => {
+  const parsedBlocks = useMemo(() => {
+    return parseAssistantMessage(content);
+  }, [content]);
+
+  return (
+    <div className="space-y-4">
+      {parsedBlocks.map((block, idx) => {
+        if (block.type === 'text') {
+          return (
+            <div key={idx} className="space-y-1">
+              <MemoizedTextBlocks content={block.content} />
+            </div>
+          );
+        } else if (block.type === 'think') {
+          return (
+            <ThinkingBlock 
+              key={idx} 
+              content={block.content} 
+              status={block.status} 
+              lang={lang}
+            />
+          );
+        } else {
+          return (
+            <ToolExecutionBlock 
+              key={idx} 
+              block={block} 
+              lang={lang} 
+              onFileOp={onFileOp}
+            />
+          );
+        }
+      })}
+    </div>
+  );
+};
+
+export const MemoizedAssistantMessage = React.memo(AssistantMessageContent);
+
+const TextBlocksContent = ({ content }: { content: string }) => {
+  const subBlocks = useMemo(() => {
+    return parseTextWithCodeBlocksAndTasks(content);
+  }, [content]);
+
+  return (
+    <>
+      {subBlocks.map((subBlock, sIdx) => {
+        if (subBlock.type === 'text') {
+          return (
+            <div key={sIdx} className="orca-markdown">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeSanitize]}>
+                {subBlock.content}
+              </ReactMarkdown>
+            </div>
+          );
+        } else if (subBlock.type === 'tasks' && subBlock.tasks) {
+          return (
+            <TaskListWidget 
+              key={sIdx}
+              tasks={subBlock.tasks}
+            />
+          );
+        } else {
+          return (
+            <CodeBlock 
+              key={sIdx} 
+              content={subBlock.content} 
+              language={subBlock.language} 
+            />
+          );
+        }
+      })}
+    </>
+  );
+};
+
+export const MemoizedTextBlocks = React.memo(TextBlocksContent);

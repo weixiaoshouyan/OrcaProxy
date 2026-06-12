@@ -7,7 +7,7 @@
         "dev": "ts-node src/index.ts",
         "build:ui": "cd frontend && npm install && npm run build",
         "build": "npm run build:ui && tsc && esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.js --format=cjs --minify",
-        "clean": "rimraf data/billing.json data/config.json data/logs",
+        "clean": "node -e \"const fs = require('fs'); ['data/billing.json', 'data/config.json', 'data/logs'].forEach(p => fs.rmSync(p, { recursive: true, force: true }))\"",
         "prepackage": "npm run clean",
         "start": "electron .",
         "package": "npm run prepackage && npm run build:ui && tsc && esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.js --format=cjs --minify && electron-builder --win"
@@ -59,7 +59,6 @@
         "electron": "^35.7.5",
         "electron-builder": "^26.0.0",
         "esbuild": "^0.28.0",
-        "rimraf": "^5.0.0",
         "ts-node": "^10.9.0",
         "typescript": "^5.6.0"
     },
