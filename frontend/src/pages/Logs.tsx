@@ -25,7 +25,8 @@ export default function Logs({ lang }: LogsProps) {
 
   const fetchLogs = () => {
     api.get('/api/logs').then(res => {
-      setLogs(res.data);
+      const logsArray = Array.isArray(res.data) ? res.data : (res.data?.logs || []);
+      setLogs(logsArray);
     }).catch(console.error);
   };
 

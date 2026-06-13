@@ -31,16 +31,41 @@ export function injectAgentTools(
     type: "function",
     function: {
       name: "read_workspace_file",
-      description: "Read the contents of a file inside the active workspace.",
+      description: "Read the contents of a file inside the active workspace. If the file is large, you can specify startLine and endLine to read a specific portion of the file.",
       parameters: {
         type: "object",
         properties: {
           relativeFilePath: {
             type: "string",
             description: "The relative path of the file from the workspace root (e.g. 'src/App.tsx' or 'document.txt')"
+          },
+          startLine: {
+            type: "integer",
+            description: "Optional. The 1-based start line number to read (inclusive)."
+          },
+          endLine: {
+            type: "integer",
+            description: "Optional. The 1-based end line number to read (inclusive)."
           }
         },
         required: ["relativeFilePath"]
+      }
+    }
+  });
+
+  tools.push({
+    type: "function",
+    function: {
+      name: "list_directory",
+      description: "List the immediate contents of a specific directory in the active workspace non-recursively, showing names and whether they are files or directories.",
+      parameters: {
+        type: "object",
+        properties: {
+          relativeDirPath: {
+            type: "string",
+            description: "Optional. The relative path of the directory from the workspace root (defaults to '.' for workspace root)."
+          }
+        }
       }
     }
   });

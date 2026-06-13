@@ -191,13 +191,60 @@ export async function handleAgentToolCall(tc: any, workspacePath: string): Promi
         return `Error: File appears to be binary (contains null bytes). This tool only supports text-based files.`;
       }
       const content = fs.readFileSync(fullPath, "utf-8");
+      
+      // Line selection logic if requested
+      if (args.startLine !== undefined || args.endLine !== undefined) {
+        const lines = content.split(/\r?\n/);
+        const start = args.startLine !== undefined ? Math.max(1, parseInt(args.startLine)) : 1;
+        const end = args.endLine !== undefined ? Math.min(lines.length, parseInt(args.endLine)) : lines.length;
+        if (start > lines.length) {
+          return `Error: startLine (${start}) exceeds total line count (${lines.length}).`;
+        }
+        if (start > end) {
+          return `Error: startLine (${start}) is greater than endLine (${end}).`;
+        }
+        const slice = lines.slice(start - 1, end);
+        return `[Showing lines ${start} to ${end} of ${lines.length} in ${args.relativeFilePath}]\n` + slice.join("\n");
+      }
+
       const limit = 50 * 1024;
       if (content.length > limit) {
-        return content.substring(0, limit) + "\n\n[File content truncated. Only the first 50KB is shown to prevent request overflow...]";
+        return content.substring(0, limit) + `\n\n[File content truncated. Only the first 50KB is shown. You can use startLine and endLine parameters to read other parts of this file.]`;
       }
       return content;
     } catch (e: any) {
       return `Error reading file: ${e.message}`;
+    }
+  }
+
+  if (toolName === "list_directory") {
+    const relativeDirPath = args.relativeDirPath || ".";
+    const { fullPath, error } = resolveSafePath(relativeDirPath);
+    if (error) return error;
+    try {
+      if (!fs.existsSync(fullPath)) {
+        return `Error: Directory not found at ${relativeDirPath}`;
+      }
+      const stat = fs.statSync(fullPath);
+      if (!stat.isDirectory()) {
+        return `Error: Path ${relativeDirPath} is not a directory.`;
+      }
+      const entries = fs.readdirSync(fullPath, { withFileTypes: true });
+      if (entries.length === 0) return `Directory ${relativeDirPath} is empty.`;
+      const resultLines = entries.map(entry => {
+        const itemPath = path.join(fullPath, entry.name);
+        try {
+          const s = fs.statSync(itemPath);
+          const typeStr = entry.isDirectory() ? "DIR " : "FILE";
+          const sizeStr = entry.isDirectory() ? "" : ` (${Math.round(s.size / 102.4) / 10}KB)`;
+          return `- [${typeStr}] ${entry.name}${sizeStr}`;
+        } catch {
+          return `- [UNKNOWN] ${entry.name}`;
+        }
+      });
+      return `Contents of directory "${relativeDirPath}":\n` + resultLines.join("\n");
+    } catch (e: any) {
+      return `Error listing directory: ${e.message}`;
     }
   }
 
