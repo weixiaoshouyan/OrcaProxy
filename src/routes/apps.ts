@@ -204,10 +204,20 @@ function scanApps() {
       os.homedir() + "\\scoop\\apps\\codex\\current",
       os.homedir() + "\\scoop\\shims",
       os.homedir() + "\\.codex",
+      localApp + "\\OpenAI\\Codex",
+      localApp + "\\OpenAI",
     ];
     for (const d of searchPaths) {
       const p = findInFolder(d, "Codex.exe"); if (p) { codexDesktopPath = p; break; }
     }
+  }
+  if (!codexDesktopPath && codexPath) {
+    try {
+      const deduced = path.join(path.dirname(path.dirname(codexPath)), "Codex.exe");
+      if (fs.existsSync(deduced)) {
+        codexDesktopPath = deduced;
+      }
+    } catch (e) {}
   }
   apps.push({ id: "codex-desktop", name: "Codex Desktop", icon: "monitor", installed: !!codexDesktopPath, path: codexDesktopPath, running: procs.includes("Codex") || procs.includes("codex"), description: "OpenAI Codex desktop application", type: "desktop" });
 

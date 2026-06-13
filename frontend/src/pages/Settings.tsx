@@ -35,11 +35,15 @@ export default function Settings({ lang, setLang }: SettingsProps) {
     api.get('/api/config').then(res => setConfig(res.data)).catch(console.error);
     api.get('/api/providers').then(res => {
       setProviders(res.data);
-      if (res.data && res.data.length > 0) {
-        setNewOverrideTargetProvider(res.data[0].id);
-        if (res.data[0].models && res.data[0].models.length > 0) {
-          setNewOverrideTargetModel(res.data[0].models[0].id);
+      const configured = res.data.filter((p: any) => p.configured);
+      if (configured && configured.length > 0) {
+        setNewOverrideTargetProvider(configured[0].id);
+        if (configured[0].models && configured[0].models.length > 0) {
+          setNewOverrideTargetModel(configured[0].models[0].id);
         }
+      } else {
+        setNewOverrideTargetProvider('');
+        setNewOverrideTargetModel('');
       }
     }).catch(console.error);
   }, []);
@@ -565,9 +569,12 @@ export default function Settings({ lang, setLang }: SettingsProps) {
                     onChange={e => handleTargetProviderChange(e.target.value)}
                     className="w-full px-3 py-1.5 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-lg text-xs outline-none focus:border-[var(--color-primary)] text-[var(--color-text-primary)]"
                   >
-                    {providers.map((p: any) => (
+                    {providers.filter((p: any) => p.configured).map((p: any) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
+                    {providers.filter((p: any) => p.configured).length === 0 && (
+                      <option value="">{lang === 'en' ? 'No configured providers' : '无已配置的供应商'}</option>
+                    )}
                   </select>
                 </div>
                 <div>

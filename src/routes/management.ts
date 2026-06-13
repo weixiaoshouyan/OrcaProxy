@@ -184,6 +184,22 @@ export function registerManagementRoutes(app: express.Application): void {
     }
   });
 
+  // ---- Billing History ----
+  app.get("/api/billing-history", (_req, res) => {
+    try {
+      const { BILLING_FILE } = require("../services/billing");
+      const fs = require("fs");
+      if (fs.existsSync(BILLING_FILE)) {
+        const data = JSON.parse(fs.readFileSync(BILLING_FILE, "utf-8"));
+        res.json(data);
+      } else {
+        res.json({});
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ---- Logs ----
   app.get("/api/logs", (_req, res) => {
     const buffer = getLogBuffer();
