@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // src/transform.ts
 // Protocol transformation: Responses API <-> Chat Completions API
 // Used by Codex CLI proxying
@@ -361,5 +361,5 @@ export function generateEndEvents(state: StreamState): string {
 }
 
 export function formatError(statusCode: number, message: string): string {
-  return sse("error", { type: "error", code: statusCode, message, param: null, type_param: null });
+  return sse("error", { type: "error", code: statusCode, message, param: null,  });
 }

@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { ArrowUp, ChevronDown, Sparkles, Bot, User, Settings2, Trash2, FileText, X, Square, Terminal, Loader, CheckCircle, Check, CornerUpLeft, Copy, Brain, Eye, Play, Zap, PanelRightOpen, PanelRightClose, GitBranch, FolderGit2, Activity, Clock, Download, Upload, Folder, FolderOpen, Search, Paperclip } from 'lucide-react';
+import { ArrowUp, ChevronDown, Sparkles, Bot, User, Trash2, FileText, X, Square, Terminal, Loader, CheckCircle, Check, CornerUpLeft, Copy, Brain, Eye, Play, Zap, PanelRightOpen, PanelRightClose, GitBranch, FolderGit2, Activity, Clock, Download, Upload, Folder, FolderOpen, Search, Paperclip } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
-import { useNavigate } from 'react-router-dom';
 import { api, fetchEventSource } from '../api';
 import { translate as t } from '../i18n';
 import type { Language } from '../i18n';
@@ -46,8 +45,58 @@ function PenSquareIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
+const MODEL_CONTEXT_SIZES: Record<string, number> = {
+  "gpt-4": 8192,
+  "gpt-4-32k": 32768,
+  "gpt-4-turbo": 128000,
+  "gpt-4o": 128000,
+  "gpt-4o-mini": 128000,
+  "gpt-4.1": 1000000,
+  "gpt-4.1-mini": 1000000,
+  "gpt-4.1-nano": 1000000,
+  "o1": 200000,
+  "o1-mini": 200000,
+  "o3-mini": 200000,
+  "claude-3-opus": 200000,
+  "claude-3-sonnet": 200000,
+  "claude-3-haiku": 200000,
+  "claude-3.5-sonnet": 200000,
+  "claude-3-5-haiku": 200000,
+  "claude-3.5-haiku": 200000,
+  "claude-sonnet-4": 200000,
+  "claude-opus-4": 200000,
+  "deepseek-chat": 128000,
+  "deepseek-reasoner": 65536,
+  "deepseek-v3": 128000,
+  "deepseek-r1": 128000,
+  "gemini-1.5-pro": 1000000,
+  "gemini-1.5-flash": 1000000,
+  "gemini-2.0-flash": 1000000,
+  "gemini-2.5-pro": 1000000,
+  "gemini-2.0": 1000000,
+  "qwen-turbo": 131072,
+  "qwen-plus": 131072,
+  "qwen-max": 32768,
+  "qwen-long": 10000000,
+  "qwen": 131072,
+  "glm-4": 131072,
+  "glm-4-flash": 131072,
+  "moonshot-v1-8k": 8192,
+  "moonshot-v1-32k": 32768,
+  "moonshot-v1-128k": 131072,
+  "llama-3": 128000,
+};
+
+function getModelContextLimit(model: string): number {
+  if (!model) return 128000;
+  const modelLower = model.toLowerCase();
+  for (const [key, size] of Object.entries(MODEL_CONTEXT_SIZES)) {
+    if (modelLower.includes(key)) return size;
+  }
+  return 128000;
+}
+
 export default function Chat({ lang }: { lang: Language }) {
-  const navigate = useNavigate();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string>('');
   const [input, setInput] = useState('');
@@ -81,7 +130,43 @@ export default function Chat({ lang }: { lang: Language }) {
       // Object.values(abortControllersRef.current).forEach(controller => controller.abort());
     };
   }, []);
-  
+
+  // ---- Keyboard Shortcuts ----
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ctrl+K: Clear context
+      if (e.ctrlKey && e.key === 'k') {
+        e.preventDefault();
+        if (activeId && (conversations.find(c => c.id === activeId)?.messages?.length ?? 0) > 1) {
+          const updated = conversations.map(c => {
+            if (c.id !== activeId) return c;
+            const sysMsg = c.messages.find(m => m.role === 'system');
+            return { ...c, messages: sysMsg ? [sysMsg] : [] };
+          });
+          saveChatsToStorage(updated);
+        }
+      }
+      // Ctrl+L: Toggle sidebar (handled in App.tsx)
+      // Ctrl+Shift+P: Toggle Build/Plan mode
+      if (e.ctrlKey && e.shiftKey && e.key === 'P') {
+        e.preventDefault();
+        setUseAgent(prev => !prev);
+      }
+      // Ctrl+N: New chat
+      if (e.ctrlKey && e.key === 'n') {
+        e.preventDefault();
+        handleNewChat();
+      }
+      // Ctrl+S: Stop generation
+      if (e.ctrlKey && e.key === 's') {
+        e.preventDefault();
+        handleStop();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [activeId, conversations]);
+
   // Agent mode & skills state
   const [useAgent, setUseAgent] = useState(true);
   const [activeSkillId, setActiveSkillId] = useState('');
@@ -199,6 +284,10 @@ export default function Chat({ lang }: { lang: Language }) {
   const streamBufferRef = useRef<string>('');
   const streamRafRef = useRef<number | null>(null);
   const lastStorageWriteRef = useRef<number>(0);
+  const lastSavedConversationsRef = useRef<Conversation[]>([]);
+  const streamMessagesRef = useRef<any[]>([]);
+  const contextTokensUpdateRef = useRef<{ used: number; total: number; percent: number } | null>(null);
+  const contextLimitRef = useRef<number>(128000);
   const STORAGE_DEBOUNCE = 2000;
 
   // Right sidebar state
@@ -653,16 +742,13 @@ export default function Chat({ lang }: { lang: Language }) {
   useEffect(() => {
     if (!activeChat) return;
     const allContent = activeChat.messages.map(m => m.content).join(' ');
-    const estimatedTokens = Math.ceil(allContent.length / 4);
-    const modelLimits: Record<string, number> = {
-      'deepseek-chat': 65536, 'deepseek-reasoner': 65536,
-      'gpt-4o': 128000, 'gpt-4o-mini': 128000, 'gpt-4-turbo': 128000,
-      'claude-sonnet-4-20250514': 200000, 'claude-3-5-haiku-20241022': 200000,
-      'qwen-turbo': 131072, 'qwen-plus': 131072, 'qwen-max': 32768, 'qwen-long': 10000000,
-      'glm-4': 131072, 'glm-4-flash': 131072,
-      'moonshot-v1-8k': 8192, 'moonshot-v1-32k': 32768, 'moonshot-v1-128k': 131072,
-    };
-    const total = modelLimits[activeChat.model] || 65536;
+    let count = 0;
+    for (let i = 0; i < allContent.length; i++) {
+      count += allContent.charCodeAt(i) > 0x7F ? 2.5 : 0.25;
+    }
+    const estimatedTokens = Math.round(count);
+    const total = getModelContextLimit(activeChat.model);
+    contextLimitRef.current = total; // Sync the ref so streaming uses the correct real limit
     const percent = Math.min(100, Math.round((estimatedTokens / total) * 100));
     setContextTokens({ used: estimatedTokens, total, percent });
   }, [activeChat?.messages, activeChat?.model]);
@@ -975,6 +1061,13 @@ export default function Chat({ lang }: { lang: Language }) {
     let userPrompt = input;
     // Embed attached file if exists
     if (attachedFile) {
+      // Warn if file is too large (>200KB)
+      if (attachedFile.content.length > 200 * 1024) {
+        alert(lang === 'en'
+          ? 'File is too large for direct attachment (>200KB). Please use a smaller file or reference it via workspace tools.'
+          : '文件过大无法直接附加 (>200KB)。请使用更小的文件或通过工作区工具引用。');
+        return;
+      }
       userPrompt = lang === 'en' 
         ? `[Attached File: ${attachedFile.name}]\n\`\`\`\n${attachedFile.content}\n\`\`\`\n${userPrompt}`
         : `[附带文件: ${attachedFile.name}]\n\`\`\`\n${attachedFile.content}\n\`\`\`\n${userPrompt}`;
@@ -993,6 +1086,9 @@ export default function Chat({ lang }: { lang: Language }) {
     const assistantIndex = newMessages.length;
     const initialAssistantMessages = [...newMessages, { role: 'assistant', content: '', timestamp: timeStr }];
     
+    // Store messages in ref for safe retry access
+    streamMessagesRef.current = newMessages.filter(m => m.role !== 'system');
+    
     // Update local state and memory
     const tempUpdated = conversations.map(c => {
       if (c.id === chatId) {
@@ -1006,11 +1102,23 @@ export default function Chat({ lang }: { lang: Language }) {
     });
     setConversations(tempUpdated);
 
+    await connectStream(chatId, assistantIndex, timeStr);
+  };
+
+  const connectStream = async (chatId: string, assistantIndex: number, timeStr: string) => {
+    const activeChat = conversations.find(c => c.id === chatId);
+    if (!activeChat) return;
+
+    // Use stored ref messages for retry, otherwise build from activeChat
+    const sendMessages = streamMessagesRef.current.length > 0 
+      ? streamMessagesRef.current 
+      : activeChat.messages.filter(m => m.role !== 'system');
+    
     // Prepare API body parameters
     const tempValue = (qualities[activeChat.quality] || qualities.high).temp;
     const body = {
       model: activeChat.model,
-      messages: newMessages.filter(m => m.role !== 'system'),
+      messages: sendMessages,
       temperature: tempValue,
       stream: true,
       useAgent,
@@ -1026,6 +1134,15 @@ export default function Chat({ lang }: { lang: Language }) {
         try {
           const parsed = JSON.parse(data);
           const delta = parsed.choices?.[0]?.delta?.content || '';
+          // Update context tokens from usage data
+          if (parsed.usage) {
+            const used = parsed.usage.prompt_tokens || 0;
+            const total = parsed.usage.total_tokens || 0;
+            if (used > 0 && total > 0) {
+              const pct = Math.min(100, Math.round((used / (contextLimitRef.current || 128000)) * 100));
+              contextTokensUpdateRef.current = { used, total: contextLimitRef.current || 128000, percent: pct };
+            }
+          }
           if (delta) {
             streamBufferRef.current += delta;
             // Batch state updates via rAF to prevent render jank
@@ -1035,6 +1152,11 @@ export default function Chat({ lang }: { lang: Language }) {
                 const buffered = streamBufferRef.current;
                 if (!buffered) return;
                 streamBufferRef.current = '';
+                // Update contextTokens from latest usage
+                if (contextTokensUpdateRef.current) {
+                  setContextTokens(contextTokensUpdateRef.current);
+                  contextTokensUpdateRef.current = null;
+                }
                 setConversations(prev => {
                   const updated = prev.map(c => {
                     if (c.id === chatId) {
@@ -1050,10 +1172,11 @@ export default function Chat({ lang }: { lang: Language }) {
                     }
                     return c;
                   });
-                  // Debounce localStorage writes
+                  // Debounce localStorage writes with ref-based safety
                   const now = Date.now();
                   if (now - lastStorageWriteRef.current >= STORAGE_DEBOUNCE) {
                     lastStorageWriteRef.current = now;
+                    lastSavedConversationsRef.current = updated;
                     localStorage.setItem('orca_conversations', JSON.stringify(updated));
                   }
                   return updated;
@@ -1072,6 +1195,10 @@ export default function Chat({ lang }: { lang: Language }) {
         const remaining = streamBufferRef.current;
         if (remaining) {
           streamBufferRef.current = '';
+          if (contextTokensUpdateRef.current) {
+            setContextTokens(contextTokensUpdateRef.current);
+            contextTokensUpdateRef.current = null;
+          }
           setConversations(prev => {
             const updated = prev.map(c => {
               if (c.id === chatId) {
@@ -1087,19 +1214,45 @@ export default function Chat({ lang }: { lang: Language }) {
               }
               return c;
             });
+            lastSavedConversationsRef.current = updated;
             localStorage.setItem('orca_conversations', JSON.stringify(updated));
             return updated;
           });
         }
         setLoadingChats(prev => ({ ...prev, [chatId]: false }));
         delete abortControllersRef.current[chatId];
+        streamMessagesRef.current = [];
       },
       (err) => {
         if (err.name === 'AbortError') {
           console.log('Request aborted by user');
+          // Mark interruption point in message
+          setConversations(prev => {
+            const updated = prev.map(c => {
+              if (c.id === chatId) {
+                const msgs = [...c.messages];
+                if (msgs[assistantIndex]) {
+                  const interruptMarker = lang === 'en'
+                    ? '\n\n---\n*[Stream interrupted]*'
+                    : '\n\n---\n*[流已中断]*';
+                  msgs[assistantIndex] = {
+                    role: 'assistant',
+                    content: msgs[assistantIndex].content + interruptMarker,
+                    timestamp: msgs[assistantIndex].timestamp || timeStr
+                  };
+                }
+                return { ...c, messages: msgs };
+              }
+              return c;
+            });
+            lastSavedConversationsRef.current = updated;
+            localStorage.setItem('orca_conversations', JSON.stringify(updated));
+            return updated;
+          });
           setLoadingChats(prev => ({ ...prev, [chatId]: false }));
           delete abortControllersRef.current[chatId];
           delete retryCountRef.current[chatId];
+          streamMessagesRef.current = [];
           return;
         }
         console.error(err);
@@ -1115,8 +1268,8 @@ export default function Chat({ lang }: { lang: Language }) {
           retryCountRef.current[chatId] = currentRetry + 1;
           const retryNum = currentRetry + 1;
           const retryMsg = lang === 'en'
-            ? '\n\n[Connection lost. Retrying (' + retryNum + '/' + MAX_RETRIES + ')...]'
-            : '\n\n[连接中断，正在重试 (' + retryNum + '/' + MAX_RETRIES + ')…]';
+            ? '\n\n[Connection lost. Reconnecting (' + retryNum + '/' + MAX_RETRIES + ')...]'
+            : '\n\n[连接中断，正在重新连接 (' + retryNum + '/' + MAX_RETRIES + ')…]';
           setConversations(prev => {
             const updated = prev.map(c => {
               if (c.id === chatId) {
@@ -1129,18 +1282,21 @@ export default function Chat({ lang }: { lang: Language }) {
               }
               return c;
             });
+            lastSavedConversationsRef.current = updated;
             localStorage.setItem('orca_conversations', JSON.stringify(updated));
             return updated;
           });
           delete abortControllersRef.current[chatId];
           setTimeout(() => {
             if (retryCountRef.current[chatId] !== undefined) {
-              handleSend();
+              // Retry by reconnecting the stream with existing messages (don't add new user message)
+              connectStream(chatId, assistantIndex, timeStr);
             }
           }, RETRY_DELAY);
           return;
         }
         delete retryCountRef.current[chatId];
+        streamMessagesRef.current = [];
         const errMsg = lang === 'en'
           ? '\n\n[Error: Failed after retries. Please check network and provider settings.]'
           : '\n\n[错误: 重试后仍无法获取响应，请检查网络和供应商配置。]';
@@ -1155,6 +1311,7 @@ export default function Chat({ lang }: { lang: Language }) {
             }
             return c;
           });
+          lastSavedConversationsRef.current = updated;
           localStorage.setItem('orca_conversations', JSON.stringify(updated));
           return updated;
         });
@@ -1475,11 +1632,11 @@ export default function Chat({ lang }: { lang: Language }) {
             </div>
             <div className="flex items-center gap-2">
               <button 
-                onClick={() => navigate('/providers')}
-                className="p-1.5 rounded-lg border border-[var(--color-border-base)] bg-white dark:bg-slate-900 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors text-gray-500 shadow-sm cursor-pointer"
-                title={lang === 'en' ? 'Provider & Model Settings' : '模型供应商设置'}
+                onClick={() => setRightSidebarOpen(!rightSidebarOpen)}
+                className="p-1.5 rounded-lg border border-[var(--color-border-base)] bg-white dark:bg-slate-900 hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:border-blue-300 dark:hover:border-blue-700 transition-all text-gray-500 hover:text-blue-500 shadow-sm cursor-pointer"
+                title={rightSidebarOpen ? (lang === 'en' ? 'Close sidebar' : '关闭侧边栏') : (lang === 'en' ? 'Open sidebar' : '打开侧边栏')}
               >
-                <Settings2 className="w-4 h-4" />
+                {rightSidebarOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
               </button>
             </div>
           </div>
@@ -2001,20 +2158,6 @@ export default function Chat({ lang }: { lang: Language }) {
         </div>
       </div>
 
-      {/* Right Sidebar Toggle Button (when collapsed) */}
-      {!rightSidebarOpen && (
-        <button
-          onClick={() => {
-            setRightSidebarOpen(true);
-            localStorage.setItem('orca_right_sidebar_open', 'true');
-          }}
-          className="fixed right-4 top-1/2 -translate-y-1/2 w-8 h-16 bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-l-lg shadow-md flex items-center justify-center hover:bg-[var(--color-bg-hover)] transition-all cursor-pointer z-20"
-          title={lang === 'en' ? 'Open sidebar' : '打开侧边栏'}
-        >
-          <PanelRightOpen className="w-4 h-4 text-[var(--color-text-secondary)]" />
-        </button>
-      )}
-
       {/* Right Sidebar Panel */}
       {rightSidebarOpen && (
         <div
@@ -2078,16 +2221,6 @@ export default function Chat({ lang }: { lang: Language }) {
                 )}
               </button>
             </div>
-            <button
-              onClick={() => {
-                setRightSidebarOpen(false);
-                localStorage.setItem('orca_right_sidebar_open', 'false');
-              }}
-              className="p-1 rounded-md hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors cursor-pointer"
-              title={lang === 'en' ? 'Close sidebar' : '关闭侧边栏'}
-            >
-              <PanelRightClose className="w-4 h-4" />
-            </button>
           </div>
 
           {/* Tab Content */}

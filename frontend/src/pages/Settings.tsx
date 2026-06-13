@@ -26,9 +26,22 @@ export default function Settings({ lang, setLang }: SettingsProps) {
   const [newModelInputPrice, setNewModelInputPrice] = useState('0.0');
   const [newModelOutputPrice, setNewModelOutputPrice] = useState('0.0');
 
+  // New Model Override state
+  const [newOverrideSource, setNewOverrideSource] = useState('');
+  const [newOverrideTargetProvider, setNewOverrideTargetProvider] = useState('');
+  const [newOverrideTargetModel, setNewOverrideTargetModel] = useState('');
+
   useEffect(() => {
     api.get('/api/config').then(res => setConfig(res.data)).catch(console.error);
-    api.get('/api/providers').then(res => setProviders(res.data)).catch(console.error);
+    api.get('/api/providers').then(res => {
+      setProviders(res.data);
+      if (res.data && res.data.length > 0) {
+        setNewOverrideTargetProvider(res.data[0].id);
+        if (res.data[0].models && res.data[0].models.length > 0) {
+          setNewOverrideTargetModel(res.data[0].models[0].id);
+        }
+      }
+    }).catch(console.error);
   }, []);
 
   const handleSave = async () => {
@@ -55,6 +68,30 @@ export default function Settings({ lang, setLang }: SettingsProps) {
   const handleRevert = () => {
     api.get('/api/config').then(res => setConfig(res.data)).catch(console.error);
     api.get('/api/providers').then(res => setProviders(res.data)).catch(console.error);
+  };
+
+  const handleAddOverride = () => {
+    if (!newOverrideSource || !newOverrideTargetProvider || !newOverrideTargetModel) return;
+    const modelOverrides = { ...(config.modelOverrides || {}) };
+    modelOverrides[newOverrideSource] = `${newOverrideTargetProvider}/${newOverrideTargetModel}`;
+    setConfig({ ...config, modelOverrides });
+    setNewOverrideSource('');
+  };
+
+  const handleRemoveOverride = (source: string) => {
+    const modelOverrides = { ...(config.modelOverrides || {}) };
+    delete modelOverrides[source];
+    setConfig({ ...config, modelOverrides });
+  };
+
+  const handleTargetProviderChange = (provId: string) => {
+    setNewOverrideTargetProvider(provId);
+    const prov = providers.find((p) => p.id === provId);
+    if (prov && prov.models && prov.models.length > 0) {
+      setNewOverrideTargetModel(prov.models[0].id);
+    } else {
+      setNewOverrideTargetModel('');
+    }
   };
 
   const handleAddMcp = () => {
@@ -206,17 +243,7 @@ export default function Settings({ lang, setLang }: SettingsProps) {
                 <p className="text-xs text-[var(--color-text-muted)] mt-2">{t('settings.defaultTemp.desc', lang)}</p>
               </div>
 
-              {/* Default Max Tokens */}
-              <div>
-                <label className="block text-sm font-semibold text-[var(--color-text-primary)] mb-2">{t('settings.defaultMaxTokens', lang)}</label>
-                <input 
-                  type="number" 
-                  value={config.defaultMaxTokens !== undefined ? config.defaultMaxTokens : 4096}
-                  onChange={e => setConfig({...config, defaultMaxTokens: parseInt(e.target.value)})}
-                  className="w-full px-4 py-2 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-xl outline-none focus:border-[var(--color-primary)] transition-colors text-sm font-medium"
-                />
-                <p className="text-xs text-[var(--color-text-muted)] mt-2">{t('settings.defaultMaxTokens.desc', lang)}</p>
-              </div>
+
             </div>
 
             {/* Boot Start Simulation (General general setting) */}
@@ -479,6 +506,88 @@ export default function Settings({ lang, setLang }: SettingsProps) {
                 className="px-4 py-2 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
               >
                 {lang === 'en' ? 'Add MCP Server' : '添加 MCP 服务'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Model Overrides Card */}
+        <div className="bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-6 border-b border-[var(--color-border-base)] bg-[var(--color-bg-base)]/50">
+            <h3 className="text-lg font-bold">{t('settings.overrides', lang)}</h3>
+          </div>
+          
+          <div className="p-6 space-y-4">
+            <p className="text-xs text-[var(--color-text-muted)] max-w-2xl leading-relaxed">{t('settings.overrides.desc', lang)}</p>
+            
+            <div className="space-y-3">
+              {Object.entries(config?.modelOverrides || {}).map(([source, target]: any) => (
+                <div key={source} className="p-4 rounded-xl border border-[var(--color-border-base)] bg-[var(--color-bg-base)]/20 flex justify-between items-center">
+                  <div className="space-y-1">
+                    <div className="text-sm font-bold text-[var(--color-text-primary)]">{source}</div>
+                    <div className="text-xs text-[var(--color-text-secondary)]">
+                      <span className="font-semibold">{lang === 'en' ? 'Redirects to:' : '重定向至:'}</span> <code className="font-mono bg-[var(--color-bg-base)] px-1.5 py-0.5 rounded text-[11px]">{target}</code>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => handleRemoveOverride(source)}
+                    className="text-red-500 hover:text-red-600 transition-colors font-bold text-xs"
+                  >
+                    {lang === 'en' ? 'Remove' : '移除'}
+                  </button>
+                </div>
+              ))}
+              {Object.keys(config?.modelOverrides || {}).length === 0 && (
+                <div className="text-center p-6 bg-[var(--color-bg-base)]/30 border border-dashed border-[var(--color-border-base)]/80 rounded-xl text-xs text-[var(--color-text-muted)] italic">
+                  {t('settings.overrides.empty', lang)}
+                </div>
+              )}
+            </div>
+
+            {/* Add model override form */}
+            <div className="p-4 bg-[var(--color-bg-base)]/50 border border-[var(--color-border-base)]/50 rounded-xl space-y-3">
+              <h4 className="text-xs font-bold text-[var(--color-text-primary)]">{lang === 'en' ? 'Add model override mapping' : '新建模型映射重定向'}</h4>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+                <div>
+                  <label className="block text-[10px] font-bold text-[var(--color-text-muted)] mb-1">{t('settings.overrides.original', lang)}</label>
+                  <input 
+                    type="text" 
+                    value={newOverrideSource}
+                    onChange={e => setNewOverrideSource(e.target.value)}
+                    placeholder="e.g. gpt-4o"
+                    className="w-full px-3 py-1.5 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-lg text-xs outline-none focus:border-[var(--color-primary)] font-mono text-[var(--color-text-primary)]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-[var(--color-text-muted)] mb-1">{lang === 'en' ? 'Target Provider' : '目标供应商'}</label>
+                  <select 
+                    value={newOverrideTargetProvider}
+                    onChange={e => handleTargetProviderChange(e.target.value)}
+                    className="w-full px-3 py-1.5 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-lg text-xs outline-none focus:border-[var(--color-primary)] text-[var(--color-text-primary)]"
+                  >
+                    {providers.map((p: any) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-[var(--color-text-muted)] mb-1">{lang === 'en' ? 'Target Model' : '目标映射模型'}</label>
+                  <select 
+                    value={newOverrideTargetModel}
+                    onChange={e => setNewOverrideTargetModel(e.target.value)}
+                    className="w-full px-3 py-1.5 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-lg text-xs outline-none focus:border-[var(--color-primary)] text-[var(--color-text-primary)]"
+                  >
+                    {providers.find((p: any) => p.id === newOverrideTargetProvider)?.models?.map((m: any) => (
+                      <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                    )) || <option value="">{lang === 'en' ? 'No models' : '无模型'}</option>}
+                  </select>
+                </div>
+              </div>
+              <button 
+                onClick={handleAddOverride}
+                className="px-4 py-2 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+              >
+                {t('settings.overrides.add', lang)}
               </button>
             </div>
           </div>

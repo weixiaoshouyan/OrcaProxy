@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { loadConfig } from "../providers";
+import { addTokens, addCost, initStats } from "../utils/stats";
 
 // ---------------------------------------------------------------------------
 // Base directory resolution (replicated from index.ts with adjusted offsets)
@@ -175,6 +176,7 @@ export function seedBillingFile() {
       }
       stats.totalTokens = total;
       stats.totalCost = totalCost;
+      initStats(total, totalCost);
     } catch (e) { log("error", "Failed to load billing stats:", e); }
   }
 }
@@ -187,6 +189,8 @@ export function accumulateCost(model: string, promptTokens: number, completionTo
   stats.totalTokens += total;
   if (!stats.totalCost) stats.totalCost = 0;
   stats.totalCost += cost;
+  addTokens(total);
+  addCost(cost);
   log("info", `[Billing] Model: ${model}, Prompt: ${promptTokens} (Cached: ${cachedTokens}), Completion: ${completionTokens}, Cost: $${cost.toFixed(6)}, Cumulative Cost: $${stats.totalCost.toFixed(4)}`);
   logDailyBilling(model, total, cachedTokens, uncachedTokens + completionTokens);
 }

@@ -251,13 +251,6 @@ export function loadConfig(): RuntimeConfig {
     _config = defaultConfig();
     saveConfig(_config);
   }
-  for (const p of BUILTIN_PROVIDERS) {
-    if (p.apiKeyEnv && process.env[p.apiKeyEnv]) {
-      if (!_config.providerKeys[p.id]) {
-        _config.providerKeys[p.id] = process.env[p.apiKeyEnv]!;
-      }
-    }
-  }
   return _config;
 }
 
@@ -293,7 +286,13 @@ export function getActiveProvider(): Provider {
 
 export function getApiKey(providerId: string): string {
   const cfg = loadConfig();
-  return cfg.providerKeys[providerId] || "";
+  const dbKey = cfg.providerKeys[providerId];
+  if (dbKey) return dbKey;
+  const p = BUILTIN_PROVIDERS.find(x => x.id === providerId);
+  if (p && p.apiKeyEnv && process.env[p.apiKeyEnv]) {
+    return process.env[p.apiKeyEnv]!;
+  }
+  return "";
 }
 
 export function resolveModel(requested: string): { provider: Provider; model: string; apiKey: string } {
@@ -347,6 +346,18 @@ export function resolveModel(requested: string): { provider: Provider; model: st
     for (const m of prov.models) {
       if (m.id === requested) {
         return { provider: prov, model: requested, apiKey: getApiKey(prov.id) };
+      }
+    }
+  }
+
+  // 3.5. Smart fuzzy/partial model matching if no exact match found yet
+  for (const prov of getAllProviders()) {
+    if (!getApiKey(prov.id)) continue;
+    for (const m of prov.models) {
+      const mId = m.id.toLowerCase();
+      const reqId = requested.toLowerCase();
+      if (reqId.includes(mId) || mId.includes(reqId)) {
+        return { provider: prov, model: m.id, apiKey: getApiKey(prov.id) };
       }
     }
   }

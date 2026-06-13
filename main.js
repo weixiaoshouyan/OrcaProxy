@@ -42,7 +42,7 @@ let tray = null;
 let serverProcess = null;
 let isQuitting = false;
 
-const PORT = getPort();
+let PORT = getPort();
 const HOST = '127.0.0.1';
 
 function getPort() {
@@ -413,23 +413,34 @@ app.whenReady().then(async () => {
   // Copy data files to userData if needed
   copyDataFiles();
 
-  // Check port availability before starting
-  const portAvailable = await checkPortAvailable(PORT);
+  // Check port availability — try alternatives before failing
+  let currentPort = PORT;
+  let portAvailable = await checkPortAvailable(currentPort);
   if (!portAvailable) {
-    const result = await dialog.showMessageBox({
-      type: 'warning',
-      title: '端口被占用 / Port In Use',
-      message: '端口 ' + PORT + ' 已被其他程序占用',
-      detail: '端口 ' + PORT + ' 已被占用，Orca 无法启动服务。\n\nPort ' + PORT + ' is already in use. Orca cannot start the server.\n\n请点击确定关闭冲突程序后重试，或修改配置文件中的端口号。',
-      buttons: ['确定 / OK', '打开配置文件 / Open Config'],
-      defaultId: 0
-    });
-    if (result.response === 1) {
-      const configPath = path.join(app.getPath('userData'), 'data', 'config.json');
-      shell.openPath(configPath);
+    // Try alternative ports 18081-18085
+    const altPorts = [18081, 18082, 18083, 18084, 18085];
+    let foundPort = false;
+    for (const alt of altPorts) {
+      const altAvailable = await checkPortAvailable(alt);
+      if (altAvailable) {
+        currentPort = alt;
+        foundPort = true;
+        console.log(`Port ${PORT} is in use, switched to alternative port ${currentPort}`);
+        break;
+      }
     }
-    app.quit();
-    return;
+    if (!foundPort) {
+      const result = await dialog.showMessageBox({
+        type: 'warning',
+        title: '端口被占用 / Port In Use',
+        message: '所有端口 (18080-18085) 均被占用',
+        detail: '所有端口 18080-18085 均被占用。请手动关闭占用端口的程序后重试。\n\nAll ports 18080-18085 are in use. Please close the conflicting application and try again.',
+        buttons: ['确定 / OK'],
+        defaultId: 0
+      });
+      app.quit();
+      return;
+    }
   }
 
   // Start the Express server

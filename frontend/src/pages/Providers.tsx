@@ -19,6 +19,7 @@ interface Provider {
   models: ProviderModel[];
   openaiCompatible: boolean;
   description: string;
+  fromEnv?: boolean;
 }
 
 interface RoutingRule {
@@ -344,11 +345,21 @@ export default function Providers({ lang }: { lang: Language }) {
                       </h4>
                       <p className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{p.description}</p>
                     </div>
-                    <div className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide shrink-0 ${
-                      isActive ? 'bg-green-500/10 text-green-500 border border-green-500/20' :
-                      p.configured ? 'bg-blue-500/10 text-blue-500 border border-blue-500/20' : 'bg-gray-500/10 text-gray-500 border border-gray-500/10'
-                    }`}>
-                      {isActive ? 'Active' : (p.configured ? 'Configured' : 'Offline')}
+                    <div className="flex gap-1.5 items-center shrink-0">
+                      {p.fromEnv && (
+                        <div 
+                          className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-purple-500/10 text-purple-500 border border-purple-500/20 cursor-help"
+                          title={t('providers.env_tooltip', lang)}
+                        >
+                          {t('providers.env_badge', lang)}
+                        </div>
+                      )}
+                      <div className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide ${
+                        isActive ? 'bg-green-500/10 text-green-500 border border-green-500/20' :
+                        p.configured ? 'bg-blue-500/10 text-blue-500 border border-blue-500/20' : 'bg-gray-500/10 text-gray-500 border border-gray-500/10'
+                      }`}>
+                        {isActive ? 'Active' : (p.configured ? 'Configured' : 'Offline')}
+                      </div>
                     </div>
                   </div>
                   <div className="text-xs text-[var(--color-text-secondary)] mb-3 font-mono break-all">{p.baseUrl}</div>

@@ -1,12 +1,12 @@
-ï»¿// ============================================================
+// ============================================================
 // src/anthropic.ts
-// Anthropic Messages API <-> OpenAI Chat Completions è½¬æ¢å™¨
-// ç”¨äºé€‚é… Claude æ¡Œé¢ç«¯
+// Anthropic Messages API <-> OpenAI Chat Completions ×ª»»Æ÷
+// ÓÃÓÚÊÊÅä Claude ×ÀÃæ¶Ë
 // ============================================================
 
 import { randomUUID } from "crypto";
 
-// ---- Anthropic ç±»å‹å®šä¹‰ ----------------------------------------------------
+// ---- Anthropic ÀàĞÍ¶¨Òå ----------------------------------------------------
 
 export interface AnthropicRequest {
   model: string;
@@ -44,7 +44,7 @@ interface AnthropicTool {
   input_schema: Record<string, unknown>;
 }
 
-// ---- è½¬æ¢: Anthropic Request -> OpenAI Chat Request ------------------------
+// ---- ×ª»»: Anthropic Request -> OpenAI Chat Request ------------------------
 
 export interface OpenAIChatRequest {
   model: string;
@@ -142,6 +142,22 @@ export function transformAnthropicRequest(body: AnthropicRequest): OpenAIChatReq
     },
   }));
 
+  
+  // Merge consecutive same-role messages (required by DeepSeek, Qwen, etc.)
+  const merged: OpenAIMessage[] = [];
+  for (const msg of messages) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === msg.role && !msg.tool_call_id && !last.tool_call_id && !msg.tool_calls && !last.tool_calls) {
+      // Merge text content
+      const lastText = typeof last.content === 'string' ? last.content : '';
+      const msgText = typeof msg.content === 'string' ? msg.content : '';
+      last.content = (lastText + '\n' + msgText).trim();
+    } else {
+      merged.push(msg);
+    }
+  }
+
+
   const req: OpenAIChatRequest = {
     model: body.model,
     messages,
@@ -157,7 +173,7 @@ export function transformAnthropicRequest(body: AnthropicRequest): OpenAIChatReq
   return req;
 }
 
-// ---- æµå¼å“åº”è½¬æ¢: OpenAI SSE -> Anthropic SSE ----------------------------
+// ---- Á÷Ê½ÏìÓ¦×ª»»: OpenAI SSE -> Anthropic SSE ----------------------------
 
 export interface AnthropicStreamState {
   messageId: string;
@@ -346,7 +362,7 @@ export function formatAnthropicError(statusCode: number, message: string): strin
   });
 }
 // ============================================================
-// Anthropic SSE éˆ«?OpenAI SSE conversion
+// Anthropic SSE â†?OpenAI SSE conversion
 // Used by /v1/chat/completions when target is Anthropic
 // ============================================================
 

@@ -129,6 +129,14 @@ export const translations = {
     'settings.fallback.desc': '选择并在当前提供商连接失败时的备用模型节点，系统会自动按顺序尝试。',
     'settings.pricing': 'Token 费率估算设置 (Cost Estimator)',
     'settings.pricing.desc': '设置各模型的输入与输出 Token 价格 (每百万个 Token，单位 USD) 用于财务开销估算。',
+    'settings.overrides': '模型映射与重定向 (Model Overrides)',
+    'settings.overrides.desc': '在此定义模型重定向映射规则。例如，可将客户端请求的 "gpt-4o" 映射重定向到已配置提供商的 "deepseek-chat" 上执行。',
+    'settings.overrides.original': '原始请求模型',
+    'settings.overrides.target': '重定向至目标',
+    'settings.overrides.add': '新增映射',
+    'settings.overrides.empty': '未配置任何模型重定向映射。',
+    'providers.env_badge': '环境变量',
+    'providers.env_tooltip': '该 API Key 自动从您系统中的环境变量中加载，无需手动保存。',
   },
   en: {
     // Sidebar
@@ -255,6 +263,14 @@ export const translations = {
     'settings.fallback.desc': 'Choose backup model nodes. The system will automatically try them in sequence if the primary node fails.',
     'settings.pricing': 'Token Cost Estimator',
     'settings.pricing.desc': 'Configure rate cards per million tokens (USD) to track and estimate API costs.',
+    'settings.overrides': 'Model Mapping & Overrides',
+    'settings.overrides.desc': 'Define model override rules here. For example, redirect incoming "gpt-4o" requests to run on "deepseek-chat" of your configured provider.',
+    'settings.overrides.original': 'Original Request Model',
+    'settings.overrides.target': 'Redirect to Target',
+    'settings.overrides.add': 'Add Mapping',
+    'settings.overrides.empty': 'No model overrides configured.',
+    'providers.env_badge': 'Env Var',
+    'providers.env_tooltip': 'This API Key is automatically loaded from your system environment variables, no manual save required.',
   }
 };
 

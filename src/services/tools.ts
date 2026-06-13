@@ -34,15 +34,9 @@ export async function handleAgentToolCall(tc: any, workspacePath: string): Promi
       try {
         args = JSON.parse(fixedStr);
       } catch (repairError) {
-        // For write_workspace_file, try to extract path
         if (toolName === "write_workspace_file") {
-          const pathMatch = argsStr.match(/"relativeFilePath"\s*:\s*"([^"]+)"/);
-          if (pathMatch) {
-            args.relativeFilePath = pathMatch[1];
-            args.content = "";
-          } else {
-            return `Error: Failed to parse arguments for ${toolName}`;
-          }
+          // Do NOT silently overwrite with empty content �� return error
+          return `Error: Failed to parse arguments for ${toolName}. File content was truncated and could not be recovered. Please retry with a smaller content block.`;
         } else {
           return `Error: Failed to parse arguments for ${toolName}`;
         }
@@ -65,9 +59,17 @@ export async function handleAgentToolCall(tc: any, workspacePath: string): Promi
     if (path.isAbsolute(relativePath)) {
       return "Error: Absolute paths are not allowed. Provide a path relative to the workspace.";
     }
-    // Normalize and check for traversal
-    const resolved = path.resolve("/", relativePath);
-    if (!resolved.startsWith(path.resolve("/"))) {
+    // Reject path traversal via ".." segments (cross-platform safe approach)
+    const normalized = path.normalize(relativePath);
+    if (normalized.startsWith("..") || normalized.includes("..\\") || normalized.includes("../")) {
+      return "Error: Path traversal detected via '..' segments. Access denied.";
+    }
+    // Reject paths that resolve to root or contain illegal characters
+    const resolved = path.resolve("/", normalized);
+    // On Windows, path.resolve("/", "x") gives "C:\\x" �?check that it doesn't escape
+    // the intended "/" root by checking that resolved path minus the drive letter stays under /
+    const resolvedParts = resolved.replace(/^[A-Za-z]:\\/, "/").replace(/\\/g, "/");
+    if (!resolvedParts.startsWith("/")) {
       return "Error: Path traversal detected. Access denied.";
     }
     return null; // valid
@@ -82,16 +84,25 @@ export async function handleAgentToolCall(tc: any, workspacePath: string): Promi
     }
     const fullPath = path.resolve(workspacePath, relativePath);
     try {
-      const realWorkspacePath = fs.realpathSync(workspacePath);
-      const realFullPath = fs.existsSync(fullPath) ? fs.realpathSync(fullPath) : fullPath;
-      // Also check the non-symlink-resolved path to catch attempts to escape
-      const normalizedFull = path.resolve(workspacePath, relativePath);
-      if (!normalizedFull.startsWith(path.resolve(workspacePath) + path.sep) && normalizedFull !== path.resolve(workspacePath)) {
+      // Normalize both paths for comparison (handle drive letter case, separators)
+      const normalizedFull = path.resolve(fullPath);
+      const normalizedWorkspace = path.resolve(workspacePath);
+      const sep = path.sep;
+      
+      // Check: resolved path must be inside workspace
+      if (!normalizedFull.startsWith(normalizedWorkspace + sep) && normalizedFull !== normalizedWorkspace) {
         return { fullPath: "", error: "Error: Path traversal violation. Access denied." };
       }
-      if (!realFullPath.startsWith(realWorkspacePath + path.sep) && realFullPath !== realWorkspacePath) {
-        return { fullPath: "", error: "Error: Path traversal violation. Access denied." };
+      
+      // Additional symlink check if file exists
+      if (fs.existsSync(fullPath)) {
+        const realFullPath = fs.realpathSync(fullPath);
+        const realWorkspacePath = fs.realpathSync(workspacePath);
+        if (!realFullPath.startsWith(realWorkspacePath + sep) && realFullPath !== realWorkspacePath) {
+          return { fullPath: "", error: "Error: Symlink traversal violation. Access denied." };
+        }
       }
+      
       return { fullPath, error: null };
     } catch (e: any) {
       return { fullPath: "", error: `Error: Path resolution failed: ${e.message}` };
@@ -261,7 +272,11 @@ export async function handleAgentToolCall(tc: any, workspacePath: string): Promi
         patternRegex = new RegExp(`^${cleanPattern}$`, 'i');
       }
 
+      const searchStartTime = Date.now();
       const searchDir = (dir: string) => {
+        if (Date.now() - searchStartTime > 10000) {
+          throw new Error("Search timeout (exceeded 10s limit). Please use a more specific file pattern or query.");
+        }
         if (results.length > 50) return;
         try {
           const list = fs.readdirSync(dir, { withFileTypes: true });
@@ -277,6 +292,17 @@ export async function handleAgentToolCall(tc: any, workspacePath: string): Promi
               }
               const stat = fs.statSync(resPath);
               if (stat.size > 2 * 1024 * 1024) continue;
+              // Skip binary files
+              const ext = path.extname(resPath).toLowerCase();
+              const BINARY_EXTS = new Set(['.exe','.dll','.so','.dylib','.png','.jpg','.jpeg','.gif','.bmp','.ico','.webp','.pdf','.zip','.gz','.tar','.rar','.7z','.woff','.woff2','.ttf','.otf','.eot','.mp3','.mp4','.avi','.mov','.wav','.flac','.class','.pyc','.pyd','.obj','.o','.a','.lib','.db','.sqlite','.sqlite3','.bin','.dat','.lock']);
+              if (BINARY_EXTS.has(ext)) continue;
+              try {
+                const headerBuf = Buffer.alloc(512);
+                const fd = fs.openSync(resPath, 'r');
+                const bytesRead = fs.readSync(fd, headerBuf, 0, 512, 0);
+                fs.closeSync(fd);
+                if (headerBuf.subarray(0, bytesRead).includes(0)) continue;
+              } catch { continue; }
               const content = fs.readFileSync(resPath, "utf-8");
               const contentMatch = caseSensitive ? content : content.toLowerCase();
               if (contentMatch.includes(queryMatch)) {
@@ -318,7 +344,11 @@ export async function handleAgentToolCall(tc: any, workspacePath: string): Promi
       cleanPattern = cleanPattern.replace(/@@ANY@@/g, '.*');
       const regex = new RegExp(`^${cleanPattern}$`, 'i');
 
+      const walkStartTime = Date.now();
       const walk = (dir: string) => {
+        if (Date.now() - walkStartTime > 10000) {
+          throw new Error("Glob search timeout (exceeded 10s limit). Please use a more specific pattern.");
+        }
         if (matchedFiles.length > 200) return;
         try {
           const list = fs.readdirSync(dir, { withFileTypes: true });

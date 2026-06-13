@@ -22,10 +22,20 @@ class MCPClient {
   private toolsList: MCPTool[] = [];
   private initialized = false;
   private reader: readline.Interface | null = null;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectDelayMs = 2000;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private intentionallyStopped = false;
+  private onReconnectedCallbacks: Array<() => void> = [];
 
   constructor(name: string, config: MCPConfig) {
     this.name = name;
     this.config = config;
+  }
+
+  public onReconnected(cb: () => void): void {
+    this.onReconnectedCallbacks.push(cb);
   }
 
   public getTools(): MCPTool[] {
@@ -82,7 +92,24 @@ class MCPClient {
     this.process.on("close", (code) => {
       console.log(`[MCP Server ${this.name}] process exited with code ${code}`);
       this.process = null;
+      this.reader = null;
       this.initialized = false;
+      // Reject all pending requests
+      for (const [id, pending] of this.pendingRequests) {
+        clearTimeout(pending.timeout);
+        pending.reject(new Error(`MCP Server ${this.name} disconnected.`));
+      }
+      this.pendingRequests.clear();
+      
+      // Auto-reconnect unless intentionally stopped
+      if (!this.intentionallyStopped && this.reconnectAttempts < this.maxReconnectAttempts) {
+        this.reconnectAttempts++;
+        const delay = this.reconnectDelayMs * Math.pow(2, this.reconnectAttempts - 1); // exponential backoff
+        console.log(`[MCP Server ${this.name}] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        this.reconnectTimer = setTimeout(() => this.tryReconnect(), delay);
+      } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        console.error(`[MCP Server ${this.name}] Max reconnect attempts reached. Giving up.`);
+      }
     });
 
     this.process.on("error", (err) => {
@@ -112,8 +139,8 @@ class MCPClient {
       
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);
-        reject(new Error(`MCP Request ${method} timed out (15s)`));
-      }, 15000);
+        reject(new Error(`MCP Request ${method} timed out (60s)`));
+      }, 60000);
 
       this.pendingRequests.set(id, { resolve, reject, timeout });
       this.process.stdin!.write(JSON.stringify(request) + "\n");
@@ -148,6 +175,11 @@ class MCPClient {
   }
 
   public kill(): void {
+    this.intentionallyStopped = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.reader) {
       this.reader.close();
       this.reader = null;
@@ -158,6 +190,22 @@ class MCPClient {
     }
     this.initialized = false;
     this.pendingRequests.clear();
+  }
+
+  private async tryReconnect(): Promise<void> {
+    if (this.intentionallyStopped) return;
+    try {
+      console.log(`[MCP] Attempting reconnect for server "${this.name}"...`);
+      await this.start();
+      this.reconnectAttempts = 0;
+      // Trigger registered callbacks
+      for (const cb of this.onReconnectedCallbacks) {
+        try { cb(); } catch (e) { console.error(`[MCP] Reconnect callback error:`, e); }
+      }
+    } catch (err) {
+      console.error(`[MCP] Reconnect failed for server "${this.name}":`, err);
+      // Retry loop will be triggered by the close handler if process exits again
+    }
   }
 }
 
