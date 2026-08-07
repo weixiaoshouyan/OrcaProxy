@@ -404,6 +404,79 @@ export function injectAgentTools(
       }
     });
   }
+
+  // 6. Reasonix-style todo tracking (available in Plan and Build modes — it is read-only bookkeeping)
+  tools.push({
+    type: "function",
+    function: {
+      name: "todo_write",
+      description:
+        "Establish or update the task list (todos). Re-send the WHOLE list on every update; the host replaces the previous list. " +
+        "Each item: {content, status: pending|in_progress|completed, activeForm?, level?}. " +
+        "level 0 items are PHASES (milestones); the level 1 items following them are their sub-steps; omit level for a flat list. " +
+        "Keep exactly one item in_progress at a time; completed items must form a serial prefix (never mark a later item completed while an earlier one is pending); " +
+        "a phase completes only after all of its sub-steps are completed. " +
+        "After a step finishes, immediately flip its status — do not batch completions.",
+      parameters: {
+        type: "object",
+        properties: {
+          todos: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                content: { type: "string", description: "Imperative description, e.g. 'Install dependencies'" },
+                status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+                activeForm: { type: "string", description: "Present-continuous form shown while in progress, e.g. 'Installing dependencies'" },
+                level: { type: "number", description: "0 = phase, 1 = sub-step" }
+              },
+              required: ["content", "status"]
+            }
+          }
+        },
+        required: ["todos"]
+      }
+    }
+  });
+
+  // 7. Step sign-off with evidence (Build mode only — blocked during planning)
+  if (useAgent === true) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "complete_step",
+        description:
+          "Sign off ONE completed todo step with evidence. The host verifies the evidence against this session's real tool activity, " +
+          "marks the step completed, and advances the task list (the next step becomes in_progress). " +
+          "Evidence kinds: verification (a command that actually ran successfully this session), diff/files (paths actually written this session), review, manual. " +
+          "Provide step (title or 1-based number), result (what is now true after this step), and at least one evidence item with a summary. " +
+          "Never batch multiple completions in one call — sign off one step at a time.",
+        parameters: {
+          type: "object",
+          properties: {
+            step: { type: "string", description: "Step title (fuzzy matched) or 1-based index" },
+            step_index: { type: "number", description: "Optional 1-based index into the todo list" },
+            result: { type: "string", description: "What is now true after finishing this step" },
+            evidence: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  kind: { type: "string", enum: ["verification", "review", "diff", "files", "manual"] },
+                  summary: { type: "string", description: "What was verified / changed" },
+                  command: { type: "string", description: "Required for kind=verification: the exact command that ran successfully" },
+                  paths: { type: "array", items: { type: "string" }, description: "Required for kind=diff/files: paths actually written" }
+                },
+                required: ["kind", "summary"]
+              }
+            },
+            notes: { type: "string" }
+          },
+          required: ["step", "result", "evidence"]
+        }
+      }
+    });
+  }
 }
 
 /**
@@ -441,42 +514,43 @@ You can run any terminal command or script directly using the \`run_terminal_com
 You have a massive 1,000,000 (1M) token context window memory.
 
 [Task Planning & Sequential Execution]
-CRITICAL: When the user issues a command or task, you MUST first parse and break down the request into a step-by-step "Task Plan" (Checklist) at the very beginning of your response.
-The Task Plan must be formatted exactly as standard task markdown list and wrapped in <task_plan> XML tags so the UI can track progress:
-<task_plan>
-   - [ ] Task Description (for pending tasks)
-   - [/] Task Description (for the active task currently executing)
-   - [x] Task Description (for completed tasks)
-</task_plan>
-You MUST output the FULL Task Plan in your FIRST response, before calling any tools.
+CRITICAL: When the user issues a command or task, you MUST first parse and break down the request into a step-by-step "Task Plan" at the very beginning of your FIRST response.
+The Task Plan uses a TWO-LEVEL markdown list — each PHASE is a top-level numbered item, and its sub-steps are indented bullets under it. Do NOT use markdown headings (##/###) for phases, so both levels stay parseable:
+1. Install dependencies
+   - Run npm install
+   - Verify node_modules present
+2. Build the frontend
+   - Run npm run build
+   - Confirm dist output exists
+Use 2-6 phases. Do not repeat the plan in later turns.
 
-In every SUBSEQUENT turn, do NOT repeat the full Task Plan. Instead, output ONE concise progress line at the very start of your response, in this exact format:
-  ⏳ [2/5] 执行：<step description>                    (when starting a step)
-  ✅ [2/5] 完成：<step description>                    (when a step just finished)
-  ❌ [2/5] 失败：<step description> — <one-line reason> (when a step failed)
-Keep it to a single line — no surrounding text, no full checklist replay. Only re-output the full <task_plan> when the plan itself changes (steps added/removed/reworded) or when the user explicitly asks for it. Execute each task step-by-step.
+After writing the plan, call the \`todo_write\` tool to establish the task list (re-send the whole list; the host replaces the previous one). Mark exactly ONE item in_progress — the step you are about to execute.
+
+In every SUBSEQUENT turn, do NOT repeat the plan and do NOT write progress lines by hand. Drive progress through the tools:
+- \`todo_write\` to flip statuses (pending → in_progress when you start a step, in_progress → completed when it is done; keep completed items a serial prefix; a phase completes only after all of its sub-steps).
+- \`complete_step\` (Build mode) to sign off each finished step WITH EVIDENCE (a verification command that actually ran successfully, or the files you actually wrote). The host then marks the step completed and advances the list for you. Sign off one step at a time — never batch completions.
 
 [Resuming and Handling Stuck Scenarios]
 If the conversation history indicates that a task was previously aborted, timed out, hit a recursion limit, or is resuming after the user typed "continue" (继续), you MUST:
 1. Examine the previous Task Plan and tool outputs to identify exactly where the task was interrupted or got stuck.
 2. If a specific tool execution failed, timed out, or produced an error repeatedly, DO NOT repeat the same failing command or tool call. Instead, analyze the failure, diagnose the issue, and try an alternative method (e.g., using a different tool, modifying command arguments, checking logs, or checking file contents first).
-3. Update the Task Plan to reflect the current state (marking completed items as [x], current as [/], etc.) and resume execution from the correct step.
+3. Update the task list via \`todo_write\` to reflect the current state and resume execution from the correct step.
 
 重要提示 (任务规划与分步执行)：
 当用户发出指令或任务时：
-1. 你必须在回复的【最开始】将任务解析并拆解为分步执行的"任务清单"(Task Plan)。
-2. 任务清单必须使用以下标准的 Markdown 任务列表格式，并包裹在 <task_plan> XML 标签内以便 UI 跟踪进度：
-   <task_plan>
-   - [ ] 任务描述 (表示待处理任务)
-   - [/] 任务描述 (表示当前正在执行的任务)
-   - [x] 任务描述 (表示已完成的任务)
-   </task_plan>
-3. 只有在【第一次回复】中才输出完整的任务清单（在任何工具调用之前）。
-4. 在【后续每一次回复】中，绝对不要重复整个任务清单；只需在回复开头输出【一行】进度标记，格式严格如下：
-   ⏳ [2/5] 执行：<步骤描述>                          （开始执行某一步时）
-   ✅ [2/5] 完成：<步骤描述>                          （某一步刚完成时）
-   ❌ [2/5] 失败：<步骤描述> — <一句话原因>            （某一步失败时）
-   只输出一行，前后不要有任何多余文字，不要重贴完整清单。只有当任务清单本身发生变化（增删改步骤）或用户明确要求时，才重新输出完整的 <task_plan>。
+1. 你必须在【第一次回复】的最开始将任务拆解为分步执行的"任务计划"(Task Plan)。
+2. 任务计划使用【双层 Markdown 列表】：每个阶段(PHASE)是顶层编号列表项，其子步骤是缩进的 bullet。不要用 Markdown 标题（##/###）写阶段名，以保证两层都可解析：
+   1. 安装依赖
+      - 运行 npm install
+      - 确认 node_modules 存在
+   2. 构建前端
+      - 运行 npm run build
+      - 确认 dist 产物存在
+   阶段数量控制在 2-6 个。后续轮次不要重复输出计划。
+3. 输出计划后，调用 \`todo_write\` 工具建立任务列表（每次发送完整列表，宿主整体替换）。将【恰好一个】即将执行的步骤标记为 in_progress。
+4. 在后续每一次回复中：不要手动输出进度行文本，一律通过工具驱动进度：
+   - \`todo_write\`：切换步骤状态（开始执行→in_progress，完成→completed；已完成项必须保持串行前缀；阶段的子步骤全部完成后才能把阶段标记完成）。
+   - \`complete_step\`（Build 模式）：每完成一步，用【证据】签核（真实成功运行的验证命令、或实际写入的文件路径）。宿主校验证据后将该步骤标记完成并自动推进列表。一次只签核一步，禁止批量签核。
 5. 按照清单步骤，一步一步执行，直至所有任务完成。
 ` + getSkillsSystemPrompt() + `
 

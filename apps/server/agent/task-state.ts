@@ -12,6 +12,21 @@ import { log } from "../utils/log";
 export type TaskStepStatus = "pending" | "running" | "completed" | "failed";
 export type AgentPhase = "plan" | "execute" | "verify" | "replan" | "pending_approval" | "done";
 
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+/**
+ * Reasonix-style todo item: level 0 = phase/milestone, level 1 = sub-step.
+ * The model re-sends the WHOLE list on every todo_write; the host validates.
+ */
+export interface TodoItem {
+  content: string;
+  status: TodoStatus;
+  /** Present-tense form shown while in progress (e.g. "Installing deps") */
+  activeForm?: string;
+  /** 0 = phase, 1 = sub-step. Omitted for a flat list. */
+  level?: number;
+}
+
 export interface TaskStep {
   id: string;
   description: string;
@@ -41,6 +56,8 @@ export interface TaskState {
   workspacePath: string;
   phase: AgentPhase;
   steps: TaskStep[];
+  /** Reasonix-style two-level todo list (todo_write tool state) */
+  todos?: TodoItem[];
   messages: any[]; // conversation history up to the last checkpoint
   iteration: number;
   maxIterations: number;
@@ -81,6 +98,7 @@ export function createTaskState(goal: string, workspacePath: string, maxIteratio
     workspacePath,
     phase: "plan",
     steps: [],
+    todos: [],
     messages: [],
     iteration: 0,
     maxIterations,

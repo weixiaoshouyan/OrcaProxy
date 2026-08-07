@@ -18,6 +18,10 @@ const WRITE_TOOLS = new Set([
   "write_workspace_file",
   "run_terminal_command",
   "run_skill_script",
+  // Todo bookkeeping is state-sensitive: never parallel with anything else,
+  // so the host's evidence ledger (records order) stays consistent.
+  "todo_write",
+  "complete_step",
 ]);
 
 function isReadOnly(name: string): boolean {

@@ -11,6 +11,9 @@ import {
   formatTaskPlan, nextPendingStep, type ToolResultRecord,
 } from "./task-state";
 import { parseTaskPlan, mergeTaskPlan, buildReplanPrompt, parsePlanProgress, applyPlanProgress } from "./planner";
+import {
+  validateTodos, todoCounts, todoReceipt, advanceTodos, matchTodoStep, renderTodoLine, parsePlanTodos,
+} from "./todo";
 import { verifyToolResults } from "./verifier";
 import { maybeSummarize } from "../agent/summarizer";
 import { generateReflection, buildReflectionPrompt } from "./reflection";
@@ -205,6 +208,126 @@ export interface ToolExecutionResult {
   aborted: boolean;
 }
 
+/**
+ * Host-handled Reasonix-style meta tools: todo_write and complete_step.
+ * These never reach the generic tool executor — the host validates state,
+ * updates taskState.todos, emits synthetic stream text and advances the list.
+ */
+function handleTodoMetaTool(
+  toolName: string,
+  args: any,
+  workspacePath: string,
+  readOnlyMode: boolean,
+  records: ToolResultRecord[],
+  taskState: TaskState | undefined,
+  writeDelta: (text: string) => void
+): string {
+  if (!taskState) return "Error: no active task state.";
+
+  if (toolName === "todo_write") {
+    const rawTodos = Array.isArray(args?.todos) ? args.todos : null;
+    if (!rawTodos) return "Error: todos parameter must be an array.";
+    const normalized = rawTodos.map((t: any) => ({
+      content: String(t?.content ?? "").slice(0, 300),
+      status: (["pending", "in_progress", "completed"].includes(t?.status) ? t.status : "pending") as any,
+      ...(t?.activeForm ? { activeForm: String(t.activeForm).slice(0, 120) } : {}),
+      ...(t?.level === 0 || t?.level === 1 ? { level: t.level } : {}),
+    }));
+    const validation = validateTodos(normalized);
+    if (!validation.ok) return `Error: ${validation.error}`;
+    taskState.todos = normalized;
+    saveTaskState(taskState);
+    const receipt = todoReceipt(normalized);
+    // Synthetic one-line stream update (Reasonix-style: progress lives in the
+    // todo state, not in model text).
+    writeDelta(`\n> 📋 ${renderTodoLine(normalized)}\n`);
+    broadcast("task_plan", taskState.taskId, { todos: normalized, phase: taskState.phase });
+    return receipt;
+  }
+
+  if (toolName === "complete_step") {
+    if (readOnlyMode) {
+      return "[Blocked] complete_step is only available in Build mode (plan mode is read-only).";
+    }
+    if (!Array.isArray(taskState.todos) || taskState.todos.length === 0) {
+      return "Error: no todo list established — call todo_write first.";
+    }
+    const step = String(args?.step ?? "");
+    const idx = matchTodoStep(taskState.todos, step, typeof args?.step_index === "number" ? args.step_index : undefined);
+    if (idx < 0) return `Error: step "${step.slice(0, 80)}" not found in the todo list. Use the exact step title or its 1-based number.`;
+    const item = taskState.todos[idx];
+    if (item.status === "completed") return `Step "${item.content}" is already completed.`;
+    if (item.level === 0) {
+      const subs = taskState.todos.slice(idx + 1).filter((t) => (t.level ?? 1) === 1);
+      if (subs.some((s) => s.status !== "completed")) {
+        return `Error: phase "${item.content}" has unfinished sub-steps — sign off its sub-steps first.`;
+      }
+    }
+
+    const resultText = String(args?.result ?? "").trim();
+    if (!resultText) return "Error: result is required (what is now true after this step).";
+    const evidence: any[] = Array.isArray(args?.evidence) ? args.evidence : [];
+    if (evidence.length === 0) return "Error: at least one evidence item is required.";
+
+    // Build the session ledger from this batch's records: successfully run
+    // commands and successfully written file paths.
+    const successCommands = new Set<string>();
+    const writtenPaths = new Set<string>();
+    for (const r of records) {
+      if (r.output.startsWith("Error:")) continue;
+      try {
+        const a = JSON.parse(r.arguments);
+        if (r.name === "run_terminal_command" && a?.command) successCommands.add(String(a.command).trim());
+        if (r.name === "write_workspace_file" || r.name === "patch_workspace_file" || r.name === "multi_edit" || r.name === "batch_write_files") {
+          const paths: string[] = Array.isArray(a?.paths) ? a.paths : (a?.filePath ? [a.filePath] : []);
+          for (const p of paths) writtenPaths.add(String(p));
+        }
+      } catch { /* ignore malformed args */ }
+    }
+
+    let hostVerified = 0;
+    let manualCount = 0;
+    const kinds: string[] = [];
+    for (const ev of evidence) {
+      const kind = String(ev?.kind ?? "");
+      kinds.push(kind);
+      if (kind === "verification") {
+        const cmd = String(ev?.command ?? "").trim();
+        if (cmd && successCommands.has(cmd)) { hostVerified++; continue; }
+        return `Error: verification evidence rejected — command "${cmd || "<missing>"}" did not run successfully in this session. Run it first, then sign off.`;
+      }
+      if (kind === "diff" || kind === "files") {
+        const paths: string[] = Array.isArray(ev?.paths) ? ev.paths.map((p: any) => String(p)) : [];
+        if (paths.length > 0 && paths.every((p) => writtenPaths.has(p))) { hostVerified++; continue; }
+        return `Error: ${kind} evidence rejected — paths were not written successfully in this session: ${paths.join(", ") || "<none>"}`;
+      }
+      if (kind === "manual") { manualCount++; continue; }
+      if (kind === "review") { manualCount++; continue; } // no in-process review system: counted, not host-verified
+    }
+    if (hostVerified === 0) {
+      return "Error: no host-verifiable evidence — include a verification command that ran successfully, or paths that were written this session.";
+    }
+
+    // Sign off + advance
+    taskState.todos[idx].status = "completed";
+    taskState.todos = advanceTodos(taskState.todos);
+    saveTaskState(taskState);
+    const c = todoCounts(taskState.todos);
+    const receipt =
+      `Step "${item.content}" signed off with ${evidence.length} evidence item(s) [${kinds.join(", ")}]. ` +
+      `Host evidence: host-verified ${hostVerified}, manual/unverified ${manualCount}. ` +
+      `Todos: ${c.completed}/${c.total} completed. The host advanced the task list; continue with the next step.`;
+    writeDelta(`\n✅ **${item.content}** — ${resultText.slice(0, 300)}\n`);
+    if (c.inProgress > 0) {
+      writeDelta(`\n> 📋 ${renderTodoLine(taskState.todos)}\n`);
+    }
+    broadcast("task_plan", taskState.taskId, { todos: taskState.todos, phase: taskState.phase });
+    return receipt;
+  }
+
+  return `Error: unknown meta tool ${toolName}`;
+}
+
 export async function executeToolsInParallel(
   toolCalls: ToolCall[],
   writeDelta: (text: string) => void,
@@ -321,6 +444,13 @@ export async function executeToolsInParallel(
             if (cached !== null) { outputs.push(`[Cached] ${cached}`); continue; }
           }
 
+          // ---- Reasonix-style todo bookkeeping (host-handled meta tools) ----
+          if (toolName === "todo_write" || toolName === "complete_step") {
+            const metaResult = handleTodoMetaTool(toolName, parsedArgs, workspacePath, readOnlyMode, records, taskState, writeDelta);
+            outputs.push(metaResult);
+            continue;
+          }
+
           let result: string;
           try {
             result = await withToolTimeout(handleAgentToolCall(tc, workspacePath, cpContext), toolName);
@@ -370,7 +500,7 @@ export async function executeToolsInParallel(
 
       const isLastGlobally = batchIdx === scheduled.length - 1 && j === batch.length - 1;
       if (isLastGlobally) {
-        toolContent += `\n\n[System Reminder: Please output the updated Task Plan (e.g. - [x] completed, - [/] in-progress, - [ ] pending) at the beginning of your next response, then continue executing the steps or summarize the results.]`;
+        toolContent += `\n\n[System Reminder: Keep your text response minimal. Update progress via todo_write (flip statuses) and sign off finished steps with complete_step (with evidence); the host advances the list for you. Then continue executing or summarize the results.]`;
       }
       messages.push({ role: "tool", tool_call_id: tc.id, content: toolContent } satisfies ChatMessage);
 
@@ -909,6 +1039,18 @@ if (hasOpenedThinkBlock && !hasClosedThinkBlock) {
           if (progress) {
             applyPlanProgress(taskState, progress);
             broadcast("task_plan", taskState.taskId, { steps: taskState.steps.length, phase: taskState.phase });
+          } else {
+            // Two-level plan (numbered phase + indented bullets): seed the todo list.
+            const seeded = parsePlanTodos(accumulatedText);
+            if (seeded.length > 0 && (!Array.isArray(taskState.todos) || taskState.todos.length === 0)) {
+              taskState.todos = seeded;
+              taskState.steps = seeded.map((t, i) => ({
+                id: `step-${i}`,
+                description: t.content,
+                status: "pending" as const,
+              }));
+              log("info", `[Todo] Seeded ${seeded.length} todo item(s) from two-level plan`);
+            }
           }
         }
       }
