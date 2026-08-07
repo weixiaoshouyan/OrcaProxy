@@ -341,13 +341,22 @@ export function runSkillScript(
 const DANGEROUS_COMMAND_PATTERNS: RegExp[] = [
   /rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/(\s|$)/,          // rm -rf /
   /rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?~\/(\s|$)/,          // rm -rf ~/
+  /rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+(\/|~|\.|"[^"]*"|[A-Za-z]:[\\\/]|\\\\|%[A-Z]%)/, // rm -rf <any absolute path>
+  /rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+\*/,              // rm -rf * (wipe cwd)
   /format\s+[a-z]:/i,                                    // format C:
   /del\s+\/[sfq]/i,                                      // del /s /f
   /rd\s+\/s/i,                                           // rd /s
-  /Remove-Item\s+.*-Recurse.*-Force.*[\\\/](\s|$)/i,    // Remove-Item -Recurse -Force \
+  /rmdir\s+\/s/i,                                        // rmdir /s
+  /Remove-Item\s+.*-Recurse/i,                           // Remove-Item -Recurse (any target)
   /curl\s+.*\|\s*(ba)?sh/,                               // curl | sh
   /wget\s+.*\|\s*(ba)?sh/,                               // wget | sh
   /Invoke-Expression\s*\(?\s*(New-Object|Invoke-WebRequest)/i, // PS download+exec
+  /powershell\s+.*(-enc|encodedcommand)\b/i,             // PS encoded command
+  /certutil\s+.*(-decode|urlcache)/i,                    // certutil decode/download
+  /bitsadmin\s+/i,                                       // bitsadmin download
+  /vssadmin\s+delete\s+shadows/i,                        // delete shadow copies
+  /bcdedit\s+\/set/i,                                    // boot config changes
+  /diskpart\s+/,                                         // disk partitioning
   /mkfs\./,                                              // mkfs.ext4
   /dd\s+.*of=\/dev\//,                                   // dd of=/dev/sda
   />\s*\/dev\/sd/,                                       // > /dev/sda

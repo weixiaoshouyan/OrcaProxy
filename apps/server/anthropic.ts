@@ -100,7 +100,7 @@ export function transformAnthropicRequest(body: AnthropicRequest): OpenAIChatReq
 
     // Array content - group by message to preserve mixed text+tool_use structure
     if (msg.role === "assistant") {
-      let textParts: string[] = [];
+      const textParts: string[] = [];
       const toolCalls: OpenAIToolCall[] = [];
 
       for (const block of msg.content) {
@@ -126,23 +126,50 @@ export function transformAnthropicRequest(body: AnthropicRequest): OpenAIChatReq
         messages.push({ role: "assistant", content: textContent });
       }
     } else {
-      // User role: each block becomes a separate message (original behavior)
+      // User role: merge consecutive text blocks into one user message and
+      // preserve order around tool_result blocks (some providers reject or
+      // reorder consecutive user messages). Image blocks become image_url
+      // parts so images are not silently dropped.
+      const parts: Array<{ role: "user"; content: any } | { role: "tool"; tool_call_id: string; content: string }> = [];
+      const flushUserTexts = () => {
+        const texts: string[] = [];
+        while (parts.length > 0 && parts[parts.length - 1].role === "user") {
+          const last = parts.pop()!;
+          if (typeof last.content === "string") texts.unshift(last.content);
+        }
+        if (texts.length) parts.push({ role: "user", content: texts.join("\n") });
+      };
       for (const block of msg.content) {
         if (block.type === "text" && msg.role === "user") {
-          messages.push({ role: "user", content: block.text || "" });
+          if (parts.length > 0 && parts[parts.length - 1].role === "user" && typeof parts[parts.length - 1].content === "string") {
+            parts[parts.length - 1].content += `\n${block.text || ""}`;
+          } else {
+            parts.push({ role: "user", content: block.text || "" });
+          }
+        } else if (block.type === "image" && msg.role === "user") {
+          const source = (block as any).source;
+          if (source && source.type === "base64" && source.data && source.media_type) {
+            const url = `data:${source.media_type};base64,${source.data}`;
+            parts.push({ role: "user", content: [{ type: "text", text: "" }, { type: "image_url", image_url: { url } }] });
+          } else if (source && source.type === "url" && source.url) {
+            parts.push({ role: "user", content: [{ type: "text", text: "" }, { type: "image_url", image_url: { url: source.url } }] });
+          }
         } else if (block.type === "tool_result") {
+          flushUserTexts();
           const resultContent = typeof block.content === "string"
             ? block.content
             : Array.isArray(block.content)
               ? block.content.filter((b) => b.type === "text").map((b) => b.text || "").join("\n")
               : JSON.stringify(block.content);
-          messages.push({
+          parts.push({
             role: "tool",
             tool_call_id: block.tool_use_id || "",
             content: resultContent,
           });
         }
       }
+      flushUserTexts();
+      messages.push(...parts);
     }
   }
 

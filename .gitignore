@@ -26,3 +26,5 @@ frontend/node_modules/.vite-temp/
 
 .reasonix/
 
+data/.token
+data/agent-tasks/

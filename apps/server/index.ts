@@ -1,20 +1,21 @@
 // ============================================================
-// src/index.ts
-// Orca Universal Proxy v2.1.1 锟?Main Entry Point
+// apps/server/index.ts
+// Orca Universal Proxy v2.1.1 — Main Entry Point
 // ============================================================
 // Architecture:
-//   src/utils/     锟?base-dir, log, stats (shared utilities)
-//   src/proxy/     锟?stream.ts, models.ts (SSE streaming, model discovery)
-//   src/agent/     锟?tools.ts, compression.ts (agent tool injection, context compression)
-//   src/routes/    锟?chat.ts, management.ts, workspace.ts, git.ts (API routes)
-//   src/services/  锟?tools.ts, skills.ts, billing.ts, helpers.ts (business logic)
-//   src/           锟?providers.ts, anthropic.ts, transform.ts, cache.ts, mcp.ts
+//   apps/server/utils/      base-dir, log, stats (shared utilities)
+//   apps/server/proxy/      stream.ts, models.ts (SSE streaming, model discovery)
+//   apps/server/agent/      tools.ts, compression.ts (agent tool injection, context compression)
+//   apps/server/routes/     chat.ts, management.ts, workspace.ts, git.ts (API routes)
+//   apps/server/services/   tools.ts, skills.ts, billing.ts, helpers.ts (business logic)
+//   apps/server/            providers.ts, anthropic.ts, transform.ts, cache.ts, mcp.ts
 // ============================================================
 
 import express, { type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import path from "path";
+import fs from "fs";
 import dns from "dns";
 
 // EPIPE resilience
@@ -56,6 +57,8 @@ import { initSkillsDirectory } from "./services/skills";
 import { clearStaleClaims } from "./agent/claims";
 import { scanForInterruptedTasks } from "./services/recovery";
 import { validateRequest } from "./utils/validate";
+import crypto from "crypto";
+import { isBlockedTarget } from "./utils/ssrf";
 
 dotenv.config({ path: process.env.ORCA_BASE_DIR ? path.join(process.env.ORCA_BASE_DIR, '.env') : undefined });
 
@@ -78,6 +81,29 @@ try { cfg = loadConfig(); } catch { cfg = { port: 3000, activeProviderId: "deeps
 export const PORT = process.env.ORCA_PORT ? parseInt(process.env.ORCA_PORT, 10) : cfg.port;
 setServerPort(PORT);
 const HOST = "127.0.0.1";
+
+// ---- Local auth token ----
+// Security default: if LOCAL_AUTH_TOKEN is not set we generate a persistent
+// random token (stored in data/.token) so /api/* and agent mode are NEVER
+// open by default, while the CLI/browser can keep using the same token across
+// restarts. Electron mode always sets LOCAL_AUTH_TOKEN from main.js.
+const LOCAL_AUTH_TOKEN = process.env.LOCAL_AUTH_TOKEN || (() => {
+  try {
+    const tokenFile = path.join(_BASE_DIR, "data", ".token");
+    const existing = fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, "utf-8").trim() : "";
+    if (existing) return existing;
+    const token = crypto.randomBytes(24).toString("hex");
+    fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
+    fs.writeFileSync(tokenFile, token, "utf-8");
+    return token;
+  } catch {
+    return crypto.randomBytes(24).toString("hex");
+  }
+})();
+if (!process.env.LOCAL_AUTH_TOKEN) {
+  log("warn", `[auth] LOCAL_AUTH_TOKEN 未设置：已自动生成令牌并保存到 data/.token（重启后保持不变）。`);
+  log("warn", `[auth] 浏览器访问 http://${HOST}:${PORT}/?token=${LOCAL_AUTH_TOKEN} 完成登录；或设置 LOCAL_AUTH_TOKEN 环境变量固定令牌。`);
+}
 
 // ---- Express App ----
 const app = express();
@@ -115,8 +141,9 @@ app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", origin);
     res.header("Access-Control-Allow-Credentials", "true");
   } else {
-    // Unknown / no origin: do not expose credentials or echo the origin.
-    res.header("Access-Control-Allow-Origin", "null");
+    // Unknown / no origin: do NOT echo the origin and do NOT set
+    // Access-Control-Allow-Origin: null (that would re-enable cross-origin
+    // reads with credentials for arbitrary websites).
   }
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, x-local-token, anthropic-version");
@@ -148,16 +175,16 @@ app.use((req, _res, next) => {
 // Security: token is set as HttpOnly cookie on initial page load (GET / with ?token=xxx),
 // then all subsequent requests authenticate via cookie 鈥?never via URL query string.
 app.use((req, res, next) => {
-  if (!process.env.LOCAL_AUTH_TOKEN) return next();
-
-  // On initial page load, transfer query-string token to HttpOnly cookie
+  // On initial page load, transfer a VALID query-string token to HttpOnly cookie
   if (req.method === "GET" && req.url.startsWith("/") && !req.url.startsWith("/api/") && req.query.token) {
-    res.cookie("orca_token", req.query.token, {
-      httpOnly: true,
-      sameSite: "strict",
-      path: "/",
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    });
+    if (req.query.token === LOCAL_AUTH_TOKEN) {
+      res.cookie("orca_token", req.query.token, {
+        httpOnly: true,
+        sameSite: "strict",
+        path: "/",
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      });
+    }
   }
 
   const cookieToken = req.cookies?.orca_token;
@@ -167,7 +194,7 @@ app.use((req, res, next) => {
     ? authHeader.slice(7)
     : undefined;
   const token = headerToken || cookieToken || bearerToken;
-  const isAuthed = token === process.env.LOCAL_AUTH_TOKEN;
+  const isAuthed = token === LOCAL_AUTH_TOKEN;
 
   if (req.url.startsWith("/api/")) {
     if (req.method === "OPTIONS") return next();
@@ -232,6 +259,10 @@ app.post("/v1/responses", async (req, res) => {
     const apiKey = resolvedModel.apiKey;
     const chatReq = transformRequest(body, resolvedModel.model);
     const targetUrl = buildProbeUrl(active.baseUrl, "/chat/completions");
+    if (isBlockedTarget(targetUrl)) {
+      log("warn", `[SSRF] Blocked outbound request to ${targetUrl}`);
+      return res.status(400).json({ error: { message: "Blocked target URL", type: "proxy_error" } });
+    }
     
     res.setHeader("x-orca-provider", active.id);
     res.setHeader("x-orca-model", resolvedModel.model);
@@ -294,6 +325,10 @@ app.post("/v1/messages", async (req, res) => {
   try {
     if (resolved.provider.id === "anthropic") {
       const targetUrl = buildProbeUrl(resolved.provider.baseUrl, "/messages");
+      if (isBlockedTarget(targetUrl)) {
+        log("warn", `[SSRF] Blocked outbound request to ${targetUrl}`);
+        return res.status(400).json({ type: "error", error: { type: "api_error", message: "Blocked target URL" } });
+      }
       const abortController = new AbortController();
       attachClientAbort(req, res, abortController, "Claude");
       const upstreamResp = await fetch(targetUrl, {
@@ -337,6 +372,10 @@ app.post("/v1/messages", async (req, res) => {
     } else {
       const chatReq = transformAnthropicRequest({ ...body, model: resolved.model });
       const targetUrl = buildProbeUrl(resolved.provider.baseUrl, "/chat/completions");
+      if (isBlockedTarget(targetUrl)) {
+        log("warn", `[SSRF] Blocked outbound request to ${targetUrl}`);
+        return res.status(400).json({ type: "error", error: { type: "api_error", message: "Blocked target URL" } });
+      }
       const abortController = new AbortController();
       attachClientAbort(req, res, abortController, "Claude");
       const upstreamResp = await fetch(targetUrl, {
@@ -402,6 +441,10 @@ app.all("/v1/*", async (req, res) => {
     pathSuffix = req.url.replace(/^\/v\d+(?=\/|$)/i, "");
   }
   const targetUrl = trimmedBase + pathSuffix;
+  if (isBlockedTarget(targetUrl)) {
+    log("warn", `[SSRF] Blocked pass-through request to ${targetUrl}`);
+    return res.status(400).json({ error: { message: "Blocked target URL", type: "proxy_error" } });
+  }
   res.setHeader("x-orca-provider", provider.id);
   if (targetModel) {
     res.setHeader("x-orca-model", targetModel);
@@ -443,7 +486,11 @@ app.all("/v1/*", async (req, res) => {
       return;
     }
     log("error", "[Pass-through] Error:", err);
-    res.status(502).json({ error: { message: String(err), type: "proxy_error" } });
+    if (!res.headersSent) {
+      res.status(502).json({ error: { message: String(err), type: "proxy_error" } });
+    } else if (!res.writableEnded) {
+      res.end();
+    }
   }
 });
 

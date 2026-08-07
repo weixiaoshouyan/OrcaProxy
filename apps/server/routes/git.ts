@@ -54,7 +54,7 @@ export function registerGitRoutes(app: express.Application): void {
         modifiedFiles
       });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
@@ -81,7 +81,7 @@ export function registerGitRoutes(app: express.Application): void {
       log("info", `[Git] Committed changes in ${targetPath}: ${message}`);
       res.json({ ok: true, output: commitOut });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 }

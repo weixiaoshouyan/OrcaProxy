@@ -26,6 +26,24 @@ export async function streamSSE(
   let endEventsWritten = false;
   let writeBuffer = "";
   let flushScheduled = false;
+  let idleTimer: NodeJS.Timeout | null = null;
+
+  // Guard against hung upstream connections: if no data arrives for this long,
+  // cancel the stream and end the response instead of hanging forever.
+  const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+  const startIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      log("warn", "[stream] idle timeout: no upstream data for 5 minutes, aborting stream");
+      clientDisconnected = true;
+      try { (reader as any).cancel("idle timeout"); } catch { /* already closed */ }
+    }, IDLE_TIMEOUT_MS);
+    if (idleTimer.unref) idleTimer.unref();
+  };
+
+  const clearIdleTimer = () => {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  };
 
   const defaultErrorFn = (status: number, message: string) =>
     `data: ${JSON.stringify({ type: "error", error: { type: status >= 500 ? "api_error" : "invalid_request_error", message } })}\n\n`;
@@ -50,9 +68,11 @@ export async function streamSSE(
   };
 
   try {
+    startIdleTimer();
     while (true) {
       const { done, value } = await reader.read();
       if (done || clientDisconnected) break;
+      startIdleTimer(); // any data resets the idle window
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
@@ -80,6 +100,7 @@ export async function streamSSE(
     log("error", "Stream error:", streamErr);
     if (!res.writableEnded) bufferedWrite(writeError(502, "Stream reading error"));
   }
+  clearIdleTimer();
   flushWrites();
   if (!res.writableEnded && !endEventsWritten) {
     const endEvents = endFn(state);

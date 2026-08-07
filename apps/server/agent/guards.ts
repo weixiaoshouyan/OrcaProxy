@@ -10,11 +10,15 @@ import type { TaskState, ToolResultRecord } from "./task-state";
 export interface GuardVerdict {
   note?: string;
   toolContentNote?: string;
+  /** When true, the caller should abort the whole task immediately. */
+  hardStop?: boolean;
 }
 
 const STORM_THRESHOLD = 3;
 const REPEAT_FAIL_THRESHOLD = 2;
 const REPEAT_SUCCESS_THRESHOLD = 2;
+/** Same tool failing this many times (regardless of error text) → abort. */
+const SAME_TOOL_FAIL_HARD_LIMIT = 4;
 
 /** Signature of a failure: tool name + first error line. */
 function failureSignature(rec: ToolResultRecord): string {
@@ -43,6 +47,21 @@ export function evaluateToolGuards(
   if (failures.length > 0) {
     const allResults = [...taskState.results, ...records];
     const recentResults = allResults.slice(-24);
+
+    // Hard stop: one tool failed repeatedly no matter the error text — the
+    // model is stuck in a retry loop and would keep burning tokens.
+    for (const fail of failures) {
+      const sameToolFails = recentResults.filter(
+        (r) => r.name === fail.name && (r.output.startsWith("Error:") || r.output.includes("[Execution Error]"))
+      ).length;
+      if (sameToolFails >= SAME_TOOL_FAIL_HARD_LIMIT) {
+        return {
+          note: `[Guard] Tool "${fail.name}" has failed ${sameToolFails} times in a row. Stopping the task — retrying the same tool will not succeed.`,
+          hardStop: true,
+        };
+      }
+    }
+
     for (const fail of failures) {
       const sig = failureSignature(fail);
       const count = recentResults.filter((r) => r.output.startsWith("Error:") && failureSignature(r) === sig).length;

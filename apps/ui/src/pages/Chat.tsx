@@ -8,6 +8,7 @@ import TerminalPanel from '../components/TerminalPanel';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
+import { rehypeSanitizeHardened } from '../utils/rehype-sanitize-hardened';
 import { api, fetchEventSource } from '../api';
 import { translate as t } from '../i18n';
 import type { Language } from '../i18n';
@@ -3853,7 +3854,7 @@ const TextBlocksContent = ({ content }: { content: string }) => {
         if (subBlock.type === 'text') {
           return (
             <div key={sIdx} className="orca-markdown">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeSanitize]}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeSanitize, rehypeSanitizeHardened]}>
                 {subBlock.content}
               </ReactMarkdown>
             </div>

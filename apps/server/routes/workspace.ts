@@ -86,7 +86,7 @@ export function registerWorkspaceRoutes(app: express.Application): void {
         
       res.json({ ok: true, items: result });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
@@ -116,7 +116,7 @@ export function registerWorkspaceRoutes(app: express.Application): void {
       const content = fs.readFileSync(filepath, "utf8");
       res.json({ ok: true, content });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
@@ -149,7 +149,7 @@ export function registerWorkspaceRoutes(app: express.Application): void {
       log("info", `[File] Opened file: ${filepath}`);
       res.json({ ok: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 }

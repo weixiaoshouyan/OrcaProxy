@@ -204,6 +204,25 @@ export function setupApiInterceptors(
 
       // Silently ignore cancellations — those are intentional user actions
       if (apiError.code !== ErrorCode.CANCELLED) {
+        // First 401 without any known token: ask the user for the local token
+        // (covers non-Electron runs where the browser has no cookie yet).
+        if (
+          apiError.code === ErrorCode.UNAUTHORIZED &&
+          !sessionStorage.getItem('orca_token') &&
+          typeof window !== 'undefined' &&
+          !(window as any).__orcaTokenPromptShown
+        ) {
+          (window as any).__orcaTokenPromptShown = true;
+          const t = window.prompt(
+            '需要本地令牌（LOCAL_AUTH_TOKEN）：\n请在服务器启动日志中查找，或打开 data/.token 复制内容。'
+          );
+          if (t && t.trim()) {
+            sessionStorage.setItem('orca_token', t.trim());
+            window.location.reload();
+          } else {
+            (window as any).__orcaTokenPromptShown = false;
+          }
+        }
         if (onError) {
           onError(apiError);
         } else {

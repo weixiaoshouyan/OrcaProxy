@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { loadConfig } from "../providers";
 import { addTokens, addCost, initStats } from "../utils/stats";
+import { atomicWriteFileSync } from "../utils/helpers";
 
 // ---------------------------------------------------------------------------
 // Base directory resolution (replicated from index.ts with adjusted offsets)
@@ -125,7 +126,7 @@ export function logDailyBilling(model: string, total: number, cached: number, un
       };
     }
 
-    fs.writeFileSync(BILLING_FILE, JSON.stringify(data, null, 2), "utf-8");
+    atomicWriteFileSync(BILLING_FILE, JSON.stringify(data, null, 2));
   } catch (e) {
     log("error", "Failed to save daily billing stats:", e);
   }
@@ -159,7 +160,7 @@ export function seedBillingFile() {
       if (hasOldMonthData) {
         log("info", `[Billing] Auto-resetting billing stats on startup: clearing records older than ${currentMonthStr}`);
         data = filteredData;
-        fs.writeFileSync(BILLING_FILE, JSON.stringify(data, null, 2), "utf-8");
+        atomicWriteFileSync(BILLING_FILE, JSON.stringify(data, null, 2));
       }
 
       let total = 0;

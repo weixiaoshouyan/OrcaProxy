@@ -331,6 +331,9 @@ export function generateEndEvents(state: StreamState): string {
       });
     }
   } else {
+    out += sse("response.output_text.done", {
+      type: "response.output_text.done", output_index: 0, content_index: 0, text: state.fullText,
+    });
     out += sse("response.content_part.done", {
       type: "response.content_part.done", output_index: 0, content_index: 0,
       part: { type: "output_text", text: state.fullText },

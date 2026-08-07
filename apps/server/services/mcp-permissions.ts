@@ -23,7 +23,9 @@ const pendingApprovals = new Map<string, PendingApproval>();
 
 export function getMcpPermissions(): McpPermissions {
   const cfg = loadConfig();
-  return cfg.mcpPermissions || { requireApproval: false, allowedTools: [] };
+  // Security default: MCP tools that can write are gated behind explicit
+  // approval unless the user opts out (requireApproval: false).
+  return cfg.mcpPermissions || { requireApproval: true, allowedTools: [] };
 }
 
 export function setMcpPermissions(perms: McpPermissions): void {

@@ -55,8 +55,21 @@ function tasksDir(): string {
   return dir;
 }
 
+/**
+ * Reject path traversal / weird task ids: only [a-zA-Z0-9_-] allowed.
+ * Mirrors services/checkpoints.ts sanitizeId. Throws on invalid input.
+ */
+export function sanitizeTaskId(taskId: string): string {
+  const raw = String(taskId ?? "");
+  const clean = raw.replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!clean || clean !== raw) {
+    throw new Error(`Invalid task id: ${raw.slice(0, 40)}`);
+  }
+  return clean;
+}
+
 function statePath(taskId: string): string {
-  return path.join(tasksDir(), `${taskId}.json`);
+  return path.join(tasksDir(), `${sanitizeTaskId(taskId)}.json`);
 }
 
 export function createTaskState(goal: string, workspacePath: string, maxIterations = 40): TaskState {

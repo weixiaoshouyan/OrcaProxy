@@ -1,6 +1,7 @@
 ﻿import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { atomicWriteFileSync } from "./utils/helpers";
 
 interface CacheEntry {
   response: any;
@@ -91,7 +92,7 @@ function getCache(): CacheData {
 function saveCache() {
   try {
     fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(_cache, null, 2), "utf-8");
+    atomicWriteFileSync(CACHE_PATH, JSON.stringify(_cache, null, 2));
   } catch (e) {
     console.error("Failed to save cache file:", e);
   }
@@ -118,6 +119,8 @@ export function computeCacheKey(body: any): string {
 
   const keyObj = {
     model: body.model,
+    providerId: body._providerId || "",
+    profileId: body._profileId || "",
     messages: normalizeMessages(body.messages),
     stream: !!body.stream,
     temperature: body.temperature ?? 0.7,
@@ -193,8 +196,12 @@ export async function replayStreamResponse(
   const id = "chatcmpl-" + Date.now();
   const created = Math.floor(Date.now() / 1000);
 
-  // Split full text into small chunks to simulate typing speed
+  // Split full text into small chunks to simulate typing speed.
+  // Batching 4 chunks per tick at 10ms keeps the effect without the
+  // multi-minute stalls a word-per-30ms replay caused on long answers.
   const words = fullText.split(/(\s+)/);
+  const BATCH = 4;
+  const TICK_MS = 10;
   let index = 0;
   let closed = false;
   let doneCalled = false;
@@ -208,6 +215,7 @@ export async function replayStreamResponse(
   const interval = setInterval(() => {
     if (closed) {
       clearInterval(interval);
+      done();
       return;
     }
     if (index >= words.length) {
@@ -221,31 +229,33 @@ export async function replayStreamResponse(
       done();
       return;
     }
-    const chunkContent = words[index];
-    const chunk = {
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [
-        {
-          index: 0,
-          delta: { content: chunkContent },
-          finish_reason: null,
-        },
-      ],
-    };
-
-    try {
-      if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    for (let b = 0; b < BATCH && index < words.length; b++) {
+      const chunkContent = words[index];
+      const chunk = {
+        id,
+        object: "chat.completion.chunk",
+        created,
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: { content: chunkContent },
+            finish_reason: null,
+          },
+        ],
+      };
+      try {
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        }
+      } catch (_) {
+        closed = true;
+        clearInterval(interval);
+        return;
       }
-    } catch (_) {
-      closed = true;
-      clearInterval(interval);
+      index++;
     }
-    index++;
-  }, 30);
+  }, TICK_MS);
 
   res.on("close", () => {
     closed = true;

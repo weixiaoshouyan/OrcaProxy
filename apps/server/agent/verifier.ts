@@ -114,7 +114,11 @@ export function verifyToolResults(
   }
 
   const cfg = loadConfig();
-  if (cfg.autoVerify !== false && fs.existsSync(workspacePath)) {
+  // Security: verification commands (npm test / npm run lint / npx tsc) execute
+  // arbitrary package.json scripts in the workspace, which is a command-injection
+  // vector when the workspace is not trusted. Off by default — opt in via
+  // config.autoVerify = true.
+  if (cfg.autoVerify === true && fs.existsSync(workspacePath)) {
     const commands = detectVerificationCommands(workspacePath);
     if (commands.length > 0) {
       log("info", `[Verifier] Running ${commands.length} verification command(s) in ${workspacePath}`);

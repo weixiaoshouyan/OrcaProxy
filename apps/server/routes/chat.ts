@@ -55,7 +55,7 @@ export function registerChatRoute(app: express.Application): void {
     let cacheKey: string | null = null;
     const canUseResponseCache = body.useAgent === undefined && !body.activeSkillId && !body.workspacePath && !body.tool_choice && !body.tools;
     if (loadConfig().cacheEnabled && canUseResponseCache) {
-      cacheKey = computeCacheKey(body);
+      cacheKey = computeCacheKey({ ...body, _providerId: resolvedTarget.provider.id });
       const cached = getCachedResponse(cacheKey);
       if (cached) {
         log("info", `[Cache] Hit cache for key ${cacheKey}`);
@@ -138,7 +138,7 @@ export function registerChatRoute(app: express.Application): void {
     }
 
     // Collect Tools: Active Skill scripts + MCP tools + built-in workspace & skill tools
-    let tools: ToolDefinition[] = [...(body.tools || [])];
+    const tools: ToolDefinition[] = [...(body.tools || [])];
     injectAgentTools(tools, useAgent, body.workspacePath);
 
     // Load Balancing and Disaster Recovery Fallback Loop

@@ -14,6 +14,7 @@ export interface ToolCall {
 const WRITE_TOOLS = new Set([
   "patch_workspace_file",
   "multi_edit",
+  "batch_write_files",
   "write_workspace_file",
   "run_terminal_command",
   "run_skill_script",

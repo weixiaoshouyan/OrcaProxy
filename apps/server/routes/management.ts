@@ -22,6 +22,50 @@ const pendingChooseDirRequests = new Map<string, (result: { path?: string; cance
 const pendingChooseSkillRequests = new Map<string, (result: { path?: string; cancelled?: boolean }) => void>();
 const pendingChooseCustomFileRequests = new Map<string, (result: { path?: string; cancelled?: boolean }) => void>();
 
+const SECRET_MASK = "***configured***";
+
+/**
+ * Deep-mask a config object so no secret material ever reaches the client:
+ * providerKeys, profile apiKey/env, customProviders apiKey, mcpServers env.
+ * Never exposes key prefixes — the mask is all-or-nothing.
+ */
+export function maskConfigForClient(c: any): any {
+  const clone = JSON.parse(JSON.stringify(c));
+  const maskVal = (v: unknown) => (v === undefined || v === null || v === "") ? v : SECRET_MASK;
+
+  const safeKeys: Record<string, string> = {};
+  for (const [k, v] of Object.entries(clone.providerKeys || {})) {
+    safeKeys[k] = v ? SECRET_MASK : "";
+  }
+  clone.providerKeys = safeKeys;
+
+  const safeProfiles: Record<string, any> = {};
+  for (const [id, p] of Object.entries(clone.profiles || {})) {
+    const prof = { ...(p as any) };
+    prof.apiKey = maskVal(prof.apiKey);
+    if (prof.env && typeof prof.env === "object") {
+      for (const ek of Object.keys(prof.env)) prof.env[ek] = maskVal(prof.env[ek]);
+    }
+    safeProfiles[id] = prof;
+  }
+  clone.profiles = safeProfiles;
+
+  clone.customProviders = (clone.customProviders || []).map((p: any) => {
+    const cp = { ...p };
+    cp.apiKey = maskVal(cp.apiKey);
+    return cp;
+  });
+
+  if (clone.mcpServers && typeof clone.mcpServers === "object") {
+    for (const s of Object.values(clone.mcpServers) as any[]) {
+      if (s && s.env && typeof s.env === "object") {
+        for (const ek of Object.keys(s.env)) s.env[ek] = maskVal(s.env[ek]);
+      }
+    }
+  }
+  return clone;
+}
+
 export function setupIPCHandlers(): void {
   if (process.send) {
     process.on("message", (msg: any) => {
@@ -89,17 +133,7 @@ export function registerManagementRoutes(app: express.Application): void {
   // ---- Config ----
   app.get("/api/config", (_req, res) => {
     const c = loadConfig();
-    const safeKeys: Record<string, string> = {};
-    for (const [k, v] of Object.entries(c.providerKeys)) {
-      safeKeys[k] = v ? `${v.slice(0, 8)}...` : "";
-    }
-    // Mask any embedded API keys so full secrets are never returned to the client
-    const safeProfiles: Record<string, any> = {};
-    for (const [id, p] of Object.entries(c.profiles || {})) {
-      safeProfiles[id] = { ...p, apiKey: p.apiKey ? "***configured***" : "" };
-    }
-    const safeCustomProviders = (c.customProviders || []).map((p: any) => ({ ...p, apiKey: p.apiKey ? "***configured***" : "" }));
-    res.json({ ...c, providerKeys: safeKeys, profiles: safeProfiles, customProviders: safeCustomProviders });
+    res.json(maskConfigForClient(c));
   });
 
   app.post("/api/config", (req, res) => {
@@ -175,7 +209,7 @@ export function registerManagementRoutes(app: express.Application): void {
         errors: stats.errors,
       });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
@@ -192,7 +226,7 @@ export function registerManagementRoutes(app: express.Application): void {
         startTime: stats.startTime,
       });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
@@ -208,7 +242,7 @@ export function registerManagementRoutes(app: express.Application): void {
         res.json({});
       }
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
@@ -295,7 +329,7 @@ export function registerManagementRoutes(app: express.Application): void {
       const { exec } = require("child_process");
       exec(`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Title = 'Select SKILL.md file'; $f.Filter = 'Skill Markdown Files (*.md)|*.md|All Files (*.*)|*.*'; if ($f.ShowDialog() -eq 'OK') { Write-Output $f.FileName }"`,
         (err: any, stdout: string) => {
-          if (err) return res.status(500).json({ error: err.message });
+          if (err) return res.status(500).json({ error: "Internal server error" });
           const p = stdout.trim();
           if (!p) return res.json({ cancelled: true });
           res.json({ ok: true, path: p });

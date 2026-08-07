@@ -21,7 +21,7 @@ import { listCheckpoints, planRewind, executeRewind, deleteCheckpointsForConvers
 import { listRecoverableTasks, clearRecoveryFlag } from "../services/recovery";
 import { checkProviderHealth } from "../services/health";
 import { checkEmbeddingHealth } from "../services/embeddings";
-import { pendingChooseSkillRequests } from "./management";
+import { pendingChooseSkillRequests, maskConfigForClient } from "./management";
 
 // ---------- Skills helpers ----------
 
@@ -75,7 +75,8 @@ export function registerExtendedRoutes(app: express.Application): void {
   // ============================================================
   app.get("/api/profiles", (_req, res) => {
     const cfg = loadConfig();
-    res.json({ profiles: cfg.profiles || {}, activeProfileId: cfg.activeProfileId });
+    const masked = maskConfigForClient(cfg);
+    res.json({ profiles: masked.profiles || {}, activeProfileId: masked.activeProfileId });
   });
 
   app.post("/api/profiles", (req, res) => {
@@ -146,7 +147,7 @@ export function registerExtendedRoutes(app: express.Application): void {
       } catch { /* ignore */ }
       res.json({ id: req.params.id, name, description, instructions, scripts, references });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      res.status(400).json({ error: "Internal server error" });
     }
   });
 
@@ -170,7 +171,7 @@ export function registerExtendedRoutes(app: express.Application): void {
       fs.writeFileSync(md, `${header}\n\n${instructions}\n`, "utf-8");
       res.json({ ok: true });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      res.status(400).json({ error: "Internal server error" });
     }
   });
 
@@ -181,7 +182,7 @@ export function registerExtendedRoutes(app: express.Application): void {
       fs.rmSync(skillPath, { recursive: true, force: true });
       res.json({ ok: true });
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      res.status(400).json({ error: "Internal server error" });
     }
   });
 
@@ -191,7 +192,7 @@ export function registerExtendedRoutes(app: express.Application): void {
         const id = importSkillFile(filePath);
         res.json({ ok: true, id });
       } catch (e: any) {
-        res.status(400).json({ error: e.message });
+        res.status(400).json({ error: "Internal server error" });
       }
     };
 
@@ -229,7 +230,7 @@ export function registerExtendedRoutes(app: express.Application): void {
       saveIndex(idx);
       res.json({ ok: true, chunks: idx.chunks.length, updatedAt: idx.updatedAt });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
@@ -244,7 +245,7 @@ export function registerExtendedRoutes(app: express.Application): void {
       const results = await searchIndex(idx, query, limit, strategy);
       res.json({ results: results.map((r) => ({ ...r.chunk, score: r.score })) });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
@@ -441,7 +442,7 @@ export function registerExtendedRoutes(app: express.Application): void {
         res.json({ ok: false, error: health.error || "Connection failed" });
       }
     } catch (e: any) {
-      res.json({ ok: false, error: e.message });
+      res.json({ ok: false, error: "Operation failed" });
     }
   });
 
@@ -470,7 +471,7 @@ export function registerExtendedRoutes(app: express.Application): void {
       }));
       res.json(out);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 

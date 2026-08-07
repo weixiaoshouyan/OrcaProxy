@@ -5,6 +5,7 @@
 // ============================================================
 
 import crypto from "crypto";
+import path from "path";
 import { log } from "../utils/log";
 
 interface CacheEntry {
@@ -20,13 +21,16 @@ const cache = new Map<string, CacheEntry>();
 let hits = 0;
 let misses = 0;
 
-function computeKey(toolName: string, args: Record<string, unknown>): string {
-  const str = `${toolName}:${JSON.stringify(args)}`;
+function computeKey(toolName: string, args: Record<string, unknown>, workspacePath?: string): string {
+  // Workspace is part of the key: the same arguments can produce different
+  // results in different workspaces (files, env, cwd).
+  const scope = workspacePath ? path.resolve(workspacePath) : "";
+  const str = `${toolName}:${scope}:${JSON.stringify(args)}`;
   return crypto.createHash("sha256").update(str).digest("hex").slice(0, 16);
 }
 
-export function getCachedToolResult(toolName: string, args: Record<string, unknown>): string | null {
-  const key = computeKey(toolName, args);
+export function getCachedToolResult(toolName: string, args: Record<string, unknown>, workspacePath?: string): string | null {
+  const key = computeKey(toolName, args, workspacePath);
   const entry = cache.get(key);
   if (!entry) {
     misses++;
@@ -45,12 +49,12 @@ export function getCachedToolResult(toolName: string, args: Record<string, unkno
   return entry.result;
 }
 
-export function setCachedToolResult(toolName: string, args: Record<string, unknown>, result: string): void {
+export function setCachedToolResult(toolName: string, args: Record<string, unknown>, result: string, workspacePath?: string): void {
   if (!CACHEABLE_TOOLS.has(toolName)) return;
   if (cache.size >= MAX_ENTRIES) {
     evictLRU();
   }
-  const key = computeKey(toolName, args);
+  const key = computeKey(toolName, args, workspacePath);
   cache.set(key, { result, timestamp: Date.now(), accessCount: 1 });
 }
 

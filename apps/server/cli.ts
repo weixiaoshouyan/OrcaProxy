@@ -27,6 +27,19 @@ const workspacePath = parseFlag("--workspace") || process.cwd();
 const profileId = parseFlag("--profile");
 const stream = parseFlag("--stream") !== "false";
 const evalTaskId = parseFlag("--eval");
+// Agent execution now always requires the local auth token (security default).
+// Accept --token <t>, or ORCA_TOKEN / LOCAL_AUTH_TOKEN env, or read the
+// token printed at server startup from data/.token if the server persisted it.
+const cliToken =
+  parseFlag("--token") ||
+  process.env.ORCA_TOKEN ||
+  process.env.LOCAL_AUTH_TOKEN ||
+  (() => {
+    try {
+      const p = require("path").join(resolveBaseDir(__dirname, 1), "data", ".token");
+      return require("fs").readFileSync(p, "utf-8").trim() || undefined;
+    } catch { return undefined; }
+  })();
 
 async function main() {
   initLogger({ baseDir: resolveBaseDir(__dirname, 1) });
@@ -87,10 +100,16 @@ async function main() {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: "Bearer orca-cli",
+      Authorization: cliToken ? `Bearer ${cliToken}` : "Bearer orca-cli",
     },
     body: JSON.stringify(body),
   });
+
+  if (resp.status === 401) {
+    console.error(`[Orca CLI] Unauthorized: agent mode requires a local token.`);
+    console.error(`[Orca CLI] Pass --token <token> (from server log / data/.token) or set LOCAL_AUTH_TOKEN.`);
+    process.exit(1);
+  }
 
   if (!resp.ok) {
     const text = await resp.text();

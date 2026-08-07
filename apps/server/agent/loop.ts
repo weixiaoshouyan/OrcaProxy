@@ -150,7 +150,10 @@ export async function fetchWithRetry(url: string, options: RequestInit & { timeo
 
       if (resp.status === 429) {
         const retryAfter = resp.headers.get("retry-after");
-        const wait = retryAfter ? parseInt(retryAfter) * 1000 : delay * Math.pow(2, i);
+        const parsedRetry = retryAfter ? parseInt(retryAfter, 10) : NaN;
+        // Cap the wait: upstream misconfigurations must not stall the agent
+        // for hours. Max 60s per attempt, and never NaN.
+        const wait = Math.min(Number.isFinite(parsedRetry) && parsedRetry > 0 ? parsedRetry * 1000 : delay * Math.pow(2, i), 60_000);
         log("warn", `[Chat] Upstream rate limited (429). Waiting ${wait}ms before retry ${i + 1}/${retries}...`);
         await new Promise(resolve => setTimeout(resolve, wait));
         continue;
@@ -210,7 +213,8 @@ export async function executeToolsInParallel(
   res: Response,
   isClientGone: () => boolean,
   resolved?: ResolvedModel,
-  taskState?: TaskState
+  taskState?: TaskState,
+  readOnlyMode: boolean = false
 ): Promise<ToolExecutionResult> {
   const MAX_TOOL_OUTPUT = 30 * 1024;
   const records: ToolResultRecord[] = [];
@@ -286,7 +290,7 @@ export async function executeToolsInParallel(
           return withToolTimeout(handleAgentToolCall(tc, workspacePath, cpContext), toolName)
             .then((result) => {
               if (CACHEABLE_TOOLS.has(toolName) && !result.startsWith("Error:")) {
-                setCachedToolResult(toolName, parsedArgs, result);
+                setCachedToolResult(toolName, parsedArgs, result, workspacePath);
               }
               return result;
             })
@@ -303,8 +307,17 @@ export async function executeToolsInParallel(
           let parsedArgs: Record<string, unknown> = {};
           try { parsedArgs = JSON.parse(tc.function.arguments || "{}"); } catch { /* ignore */ }
 
+          // Plan / read-only mode gate: only read-only tools may execute.
+          // This is the enforcement point — even if a tool sneaks into the
+          // injected tool list, execution is refused here.
+          if (readOnlyMode && !isReadOnlyTool(toolName)) {
+            log("warn", `[Gate] Tool "${toolName}" blocked in read-only mode`);
+            outputs.push(`[Blocked] Tool "${toolName}" is not allowed in read-only (plan) mode. Only read-only tools can be used here.`);
+            continue;
+          }
+
           if (CACHEABLE_TOOLS.has(toolName)) {
-            const cached = getCachedToolResult(toolName, parsedArgs);
+            const cached = getCachedToolResult(toolName, parsedArgs, workspacePath);
             if (cached !== null) { outputs.push(`[Cached] ${cached}`); continue; }
           }
 
@@ -405,6 +418,19 @@ export async function executeToolsInParallel(
   // Loop guards: storm breaker / repeat-failure / repeat-success.
   if (taskState && records.length > 0) {
     const verdict = evaluateToolGuards(taskState, records);
+    if (verdict.hardStop) {
+      writeDelta(`\n\n> 🛑 **${verdict.note}**\n`);
+      log("error", `[Guard] Hard stop: ${verdict.note}`);
+      if (taskState) {
+        taskState.phase = "replan";
+        taskState.metadata.hardStop = verdict.note;
+        saveTaskState(taskState);
+      }
+      if (!res.writableEnded) {
+        try { res.end(); } catch { /* already closed */ }
+      }
+      return { records, aborted: true };
+    }
     if (verdict.note) {
       const lastToolMsg = [...messages].reverse().find((m) => m.role === "tool");
       if (lastToolMsg) {
@@ -539,9 +565,18 @@ const maxDepth = 50;
       }
       taskState = createTaskState(goal, workspacePath);
       log("info", `[Agent] Created task ${taskState.taskId}`);
-      taskState.metadata.originalRequest = JSON.parse(JSON.stringify(body));
-      delete taskState.metadata.originalRequest.resumeTaskId;
-      delete taskState.metadata.originalRequest.taskId;
+      // Bound the stored original request: keep only the last 20 messages,
+      // each capped at 4k chars, so large requests cannot balloon the JSON file.
+      const boundedOriginal: any = JSON.parse(JSON.stringify(body));
+      delete boundedOriginal.resumeTaskId;
+      delete boundedOriginal.taskId;
+      if (Array.isArray(boundedOriginal.messages)) {
+        boundedOriginal.messages = boundedOriginal.messages.slice(-20).map((m: any) => ({
+          ...m,
+          content: typeof m.content === "string" ? m.content.slice(0, 4000) : m.content,
+        }));
+      }
+      taskState.metadata.originalRequest = boundedOriginal;
       saveTaskState(taskState);
       broadcast("task_start", taskState.taskId, { goal, workspacePath });
     }
@@ -698,7 +733,7 @@ const maxDepth = 50;
       throw new Error(`Upstream returned ${upstreamResp.status}: ${errText}`);
     }
 
-    let accumulatedToolCalls: ToolCall[] = [];
+    const accumulatedToolCalls: ToolCall[] = [];
     let accumulatedText = "";
     let hasOpenedThinkBlock = false;
     let hasClosedThinkBlock = false;
@@ -882,7 +917,7 @@ if (hasOpenedThinkBlock && !hasClosedThinkBlock) {
         res.write("data: " + JSON.stringify(chunk) + "\n\n");
       };
 
-      const { records, aborted } = await executeToolsInParallel(toolCalls, writeDelta, messages, body.workspacePath || "", res, isClientGone, resolved, taskState);
+      const { records, aborted } = await executeToolsInParallel(toolCalls, writeDelta, messages, body.workspacePath || "", res, isClientGone, resolved, taskState, !useAgent);
 
       if (aborted) {
         if (isClientGone()) return;
@@ -1069,7 +1104,7 @@ if (hasOpenedThinkBlock && !hasClosedThinkBlock) {
         saveTaskState(taskState);
       }
 
-      const { records, aborted } = await executeToolsInParallel(toolCalls, () => {}, messages, body.workspacePath || "", res, isClientGone, resolved, taskState);
+      const { records, aborted } = await executeToolsInParallel(toolCalls, () => {}, messages, body.workspacePath || "", res, isClientGone, resolved, taskState, !useAgent);
 
       if (aborted) {
         if (isClientGone()) return;
@@ -1085,6 +1120,11 @@ if (hasOpenedThinkBlock && !hasClosedThinkBlock) {
 
       if (taskState) {
         taskState.results.push(...records);
+        // Bound the result history: keep the last 50 tool executions so long
+        // tasks do not grow the state file without limit.
+        if (taskState.results.length > 50) {
+          taskState.results = taskState.results.slice(-50);
+        }
         recordEvidence(taskState, records);
         const verification = verifyToolResults(records, taskState.workspacePath);
         if (!verification.ok) {

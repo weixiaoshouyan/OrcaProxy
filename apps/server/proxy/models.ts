@@ -7,6 +7,7 @@ import express from "express";
 import { loadConfig, saveConfig, getAllProviders, getProvider, getApiKey } from "../providers";
 import { log } from "../utils/log";
 import { buildProbeUrl } from "../services/health";
+import { isBlockedTarget } from "../utils/ssrf";
 
 export function registerModelRoutes(app: express.Application): void {
 
@@ -17,6 +18,9 @@ export function registerModelRoutes(app: express.Application): void {
     const apiKey = getApiKey(provider.id);
     try {
       const targetUrl = buildProbeUrl(provider.baseUrl, "/models");
+      if (isBlockedTarget(targetUrl)) {
+        return res.status(400).json({ error: `Blocked target URL: ${targetUrl}` });
+      }
       const headers: Record<string, string> = {};
       if (provider.id === "anthropic") {
         if (apiKey) {
@@ -72,6 +76,11 @@ export function registerModelRoutes(app: express.Application): void {
       const apiKey = getApiKey(provider.id);
       try {
         const targetUrl = buildProbeUrl(provider.baseUrl, "/models");
+        if (isBlockedTarget(targetUrl)) {
+          results.push({ provider: provider.id, models: [], error: "Blocked target URL" });
+          send("result", { provider: provider.id, models: [], error: "Blocked target URL" });
+          continue;
+        }
         const headers: Record<string, string> = {};
         if (provider.id === "anthropic") { if (apiKey) { headers["x-api-key"] = apiKey; headers["anthropic-version"] = "2023-06-01"; } }
         else { if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`; }
@@ -94,7 +103,13 @@ export function registerModelRoutes(app: express.Application): void {
     const { providers: providerModels } = req.body || {};
     if (!Array.isArray(providerModels)) return res.status(400).json({ error: "providers array required" });
     const current = loadConfig(); let updated = 0;
-    for (const entry of providerModels) { const pcfg = (current as any).providers?.[entry.provider]; if (pcfg && Array.isArray(entry.models)) { pcfg.models = entry.models.map((m: any) => (typeof m === "string" ? { id: m, name: m } : { id: m.id || m, name: m.name || m.id || m })); updated++; } }
+    for (const entry of providerModels) {
+      const pcfg = (current.customProviders || []).find((p: any) => p.id === entry.provider);
+      if (pcfg && Array.isArray(entry.models)) {
+        pcfg.models = entry.models.map((m: any) => (typeof m === "string" ? { id: m, name: m } : { id: m.id || m, name: m.name || m.id || m }));
+        updated++;
+      }
+    }
     saveConfig(current); res.json({ ok: true, updated });
   });
 

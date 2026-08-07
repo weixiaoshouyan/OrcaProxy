@@ -419,7 +419,8 @@ export function registerAppsRoutes(app: express.Application): void {
       if (app.type === "cli") {
         if (id.startsWith("codex")) updateCodexConfig(proxyUrl);
         // Escape shell metacharacters in provider.name to prevent cmd injection
-        const displayName = String(provider?.name || "").replace(/["&|^<>%!]/g, "");
+        // (\r\n would allow breaking out of the `echo` line into new commands)
+        const displayName = String(provider?.name || "").replace(/["&|^<>%!\r\n]/g, "");
         const child = spawn("cmd", ["/c", "start", "cmd", "/k",
           "set OPENAI_BASE_URL=" + proxyUrl + "/v1 && set OPENAI_API_KEY=sk-dummy && echo Orca Proxy: " + proxyUrl + "/v1 && echo Provider: " + displayName
         ], { detached: true, stdio: "ignore" });
@@ -463,7 +464,7 @@ export function registerAppsRoutes(app: express.Application): void {
           const { exec } = require("child_process");
           exec(`powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Filter = 'All Files (*.*)|*.*'; if ($f.ShowDialog() -eq 'OK') { Write-Output $f.FileName }"`,
             (err: any, stdout: string) => {
-              if (err) return resolve({ error: err.message });
+              if (err) return resolve({ error: "Internal server error" });
               const p = stdout.trim();
               if (!p) return resolve({ cancelled: true });
               resolve({ path: p });
@@ -482,7 +483,7 @@ export function registerAppsRoutes(app: express.Application): void {
         _appsCache = null;
         log("info", `[Apps] Custom path set for ${id}: ${result.path}`);
         res.json({ ok: true, path: result.path });
-      } catch (e: any) { res.status(500).json({ error: e.message }); }
+      } catch (e: any) { res.status(500).json({ error: "Internal server error" }); }
     }).catch(e => { res.status(500).json({ error: String(e) }); });
   });
 
@@ -494,14 +495,30 @@ export function registerAppsRoutes(app: express.Application): void {
       _appsCache = null;
       log("info", `[Apps] Cleared custom path for ${id}`);
       res.json({ ok: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { res.status(500).json({ error: "Internal server error" }); }
   });
+}
+
+/**
+ * Back up an existing config file before overwriting it, so a misconfigured
+ * write can be rolled back manually (path gets a .orca-backup-<ts> sibling).
+ */
+function backupFileBeforeWrite(filePath: string): void {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const backupPath = `${filePath}.orca-backup-${Date.now()}`;
+    fs.copyFileSync(filePath, backupPath);
+    log("info", `[Launch] Backed up ${filePath} -> ${backupPath}`);
+  } catch (e) {
+    log("warn", `[Launch] Backup failed for ${filePath}:`, e);
+  }
 }
 
 function updateCodexConfig(proxyUrl: string) {
   try {
     const codexConfigPath = path.join(os.homedir(), ".codex", "config.toml");
     if (fs.existsSync(codexConfigPath)) {
+      backupFileBeforeWrite(codexConfigPath);
       let toml = fs.readFileSync(codexConfigPath, "utf-8");
       toml = toml.replace(/(\[model_providers\.OpenAI\][\s\S]*?base_url\s*=\s*)"[^"]*"/, `$1"${proxyUrl}/v1"`);
       if (!toml.match(/^base_url\s*=\s*"http:\/\/127\.0\.0\.1/m)) {
@@ -521,6 +538,7 @@ function updateClaudeConfig(proxyUrl: string) {
       : path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "Claude", "claude_desktop_config.json");
     let claudeConfig: any = {};
     try { claudeConfig = JSON.parse(fs.readFileSync(claudeConfigPath, "utf-8")); } catch {}
+    backupFileBeforeWrite(claudeConfigPath);
     claudeConfig.proxy = { url: proxyUrl };
     fs.mkdirSync(path.dirname(claudeConfigPath), { recursive: true });
     fs.writeFileSync(claudeConfigPath, JSON.stringify(claudeConfig, null, 2), "utf-8");
@@ -532,6 +550,7 @@ function updateClineRooConfig(configPath: string, proxyUrl: string, provider: an
   try {
     let config: any = {};
     if (fs.existsSync(configPath)) { try { config = JSON.parse(fs.readFileSync(configPath, "utf-8")); } catch {} }
+    backupFileBeforeWrite(configPath);
     config.apiProvider = "openai";
     config.openAiBaseUrl = proxyUrl + "/v1";
     config.openAiApiKey = "sk-dummy";

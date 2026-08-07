@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { resolveBaseDir } from "../utils/base-dir";
+import { atomicWriteFileSync } from "../utils/helpers";
 
 // ---- Turn-anchored file snapshot checkpoints ----
 // Design (mirrors Reasonix checkpoint philosophy):
@@ -191,9 +192,9 @@ export function saveTurnCheckpoint(opts: {
   try {
     const dir = path.dirname(checkpointPath(opts.conversationId, opts.turn));
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(checkpointPath(opts.conversationId, opts.turn), JSON.stringify(checkpoint, null, 2), "utf-8");
+    atomicWriteFileSync(checkpointPath(opts.conversationId, opts.turn), JSON.stringify(checkpoint, null, 2));
   } catch (e: any) {
-    // eslint-disable-next-line no-console
+     
     console.error(`[Checkpoint] Failed to save turn ${opts.turn}: ${e.message}`);
     return null;
   }

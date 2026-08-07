@@ -3,6 +3,25 @@
 // Shared utility functions used across the backend
 // ============================================================
 
+import fs from "fs";
+
+/**
+ * Write a file atomically: write to a temp sibling then rename, so a crash
+ * mid-write never leaves a truncated/corrupt JSON file behind.
+ */
+export function atomicWriteFileSync(filePath: string, data: string): void {
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmpPath, data, "utf-8");
+  try {
+    fs.renameSync(tmpPath, filePath);
+  } catch (e) {
+    // Windows: rename over an existing open file can fail — fall back to
+    // remove+rename, then plain write as a last resort.
+    try { fs.rmSync(filePath, { force: true }); fs.renameSync(tmpPath, filePath); }
+    catch { try { fs.writeFileSync(filePath, data, "utf-8"); } finally { try { fs.rmSync(tmpPath, { force: true }); } catch {} } }
+  }
+}
+
 /**
  * Check if an error is a broken pipe (EPIPE) error.
  * These errors occur when the client disconnects before the response is complete,

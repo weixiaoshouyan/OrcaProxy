@@ -316,10 +316,34 @@ function createWindow() {
     // mainWindow.webContents.openDevTools();
   });
 
-  // Handle external links
+  // Handle external links — only http(s) to a non-local host, and strip any
+  // auth token from the URL so credentials never leak to an external browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    try {
+      const u = new URL(url);
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') {
+          u.searchParams.delete('token');
+          shell.openExternal(u.toString());
+        }
+      }
+    } catch { /* ignore malformed URLs */ }
     return { action: 'deny' };
+  });
+
+  // Prevent in-window navigation away from the local server (would leak the
+  // token-carrying URL via Referer). External links open in the system browser.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    try {
+      const u = new URL(url);
+      if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') {
+        event.preventDefault();
+        if (u.protocol === 'http:' || u.protocol === 'https:') {
+          u.searchParams.delete('token');
+          shell.openExternal(u.toString());
+        }
+      }
+    } catch { /* ignore malformed URLs */ }
   });
 
   // Minimize to tray instead of closing

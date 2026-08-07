@@ -110,6 +110,18 @@ export function getGitLog(workspacePath: string, options: { count?: number; file
 export function gitCommit(workspacePath: string, message: string, options: { amend?: boolean; allowEmpty?: boolean } = {}): { ok: boolean; output: string } {
   if (!isGitRepo(workspacePath)) return { ok: false, output: "Not a git repository" };
 
+  // Safety: never stage/commit outside the workspace. `git add -A` in a repo
+  // whose root is a parent directory would sweep unrelated files (and secrets)
+  // into the commit — refuse unless the repo root is inside the workspace.
+  const rootResult = runGit(["rev-parse", "--show-toplevel"], workspacePath);
+  if (!rootResult.ok) return { ok: false, output: `Could not determine repo root: ${rootResult.output}` };
+  const repoRoot = String(rootResult.output).trim();
+  const resolvedWs = path.resolve(workspacePath);
+  const resolvedRoot = path.resolve(repoRoot);
+  if (resolvedRoot !== resolvedWs && !resolvedWs.startsWith(resolvedRoot + path.sep) && !resolvedRoot.startsWith(resolvedWs + path.sep)) {
+    return { ok: false, output: `Refusing to commit: repo root ${repoRoot} is outside the workspace ${workspacePath}` };
+  }
+
   const stageResult = runGit(["add", "-A"], workspacePath);
   if (!stageResult.ok) return { ok: false, output: `Stage failed: ${stageResult.output}` };
 

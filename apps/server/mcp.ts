@@ -89,7 +89,12 @@ class MCPClient {
           }
         }
       } catch (e) {
-        console.error(`[MCP Client ${this.name}] Failed to parse message line:`, line, e);
+        // Redact likely secrets before logging raw MCP output
+        const redacted = String(line)
+          .replace(/("?(?:api[_-]?key|token|secret|password)"?\s*[:=]\s*")[^"]{4,}(")/gi, "$1***$2")
+          .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "sk-***")
+          .slice(0, 500);
+        console.error(`[MCP Client ${this.name}] Failed to parse message line:`, redacted, e);
       }
     });
 
@@ -194,6 +199,11 @@ class MCPClient {
       this.process = null;
     }
     this.initialized = false;
+    // Clear pending request timers to avoid leaks
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(`MCP Server ${this.name} stopped.`));
+    }
     this.pendingRequests.clear();
   }
 
