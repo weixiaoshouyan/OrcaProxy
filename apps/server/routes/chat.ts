@@ -15,7 +15,8 @@ import { parseFrontmatter, SKILLS_DIR, resolveSafeSkillPath } from "../services/
 import { accumulateCost } from "../services/billing";
 import { computeCacheKey, getCachedResponse, replayStreamResponse } from "../cache";
 import { injectAgentTools, buildAgentPrompt, buildCodebaseContext } from "../agent/tools";
-import { executeAgentCompletions, mkChunk } from "../agent/loop";
+import { runAgentTask } from "../agent/engine";
+import { mkChunk } from "../agent/loop";
 import type { ChatMessage, ToolDefinition } from "../agent/types";
 
 export function registerChatRoute(app: express.Application): void {
@@ -167,7 +168,7 @@ export function registerChatRoute(app: express.Application): void {
 
       try {
         log("info", `[Route] Attempting route ${body.model} -> ${provider.id}/${resolved.model}`);
-        await executeAgentCompletions(req, res, body, resolved, messages, tools, useAgent, activeSkillId, startTime, cacheKey);
+        await runAgentTask(req, res, body, resolved, messages, tools, useAgent, activeSkillId, startTime, cacheKey);
         return;
       } catch (err) {
         log("warn", `[Route] Provider ${provId} failed:`, err);

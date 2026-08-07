@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // src/agent/tools.ts
 // Agent tool injection for Build/Plan mode
 // ============================================================
@@ -8,6 +8,7 @@ import { getSkillsSystemPrompt, SKILLS_DIR } from "../services/skills";
 import { getGitStatus, formatGitStatusForAgent } from "./git-tools";
 import { buildMemoryContext, loadProjectRules } from "./memory";
 import { generateRepoMap, formatRepoMapForAgent } from "./codebase";
+import { REASONIX_BASE_PROMPT, UPDATE_GOAL_DESCRIPTION } from "./prompts";
 
 /**
  * Inject agent-specific tools into the tools array based on mode.
@@ -405,7 +406,7 @@ export function injectAgentTools(
     });
   }
 
-  // 6. Reasonix-style todo tracking (available in Plan and Build modes — it is read-only bookkeeping)
+  // 6. Reasonix-style todo tracking (available in Plan and Build modes 鈥?it is read-only bookkeeping)
   tools.push({
     type: "function",
     function: {
@@ -416,7 +417,7 @@ export function injectAgentTools(
         "level 0 items are PHASES (milestones); the level 1 items following them are their sub-steps; omit level for a flat list. " +
         "Keep exactly one item in_progress at a time; completed items must form a serial prefix (never mark a later item completed while an earlier one is pending); " +
         "a phase completes only after all of its sub-steps are completed. " +
-        "After a step finishes, immediately flip its status — do not batch completions.",
+        "After a step finishes, immediately flip its status 鈥?do not batch completions.",
       parameters: {
         type: "object",
         properties: {
@@ -439,7 +440,7 @@ export function injectAgentTools(
     }
   });
 
-  // 7. Step sign-off with evidence (Build mode only — blocked during planning)
+  // 7. Step sign-off with evidence (Build mode only 鈥?blocked during planning)
   if (useAgent === true) {
     tools.push({
       type: "function",
@@ -450,7 +451,7 @@ export function injectAgentTools(
           "marks the step completed, and advances the task list (the next step becomes in_progress). " +
           "Evidence kinds: verification (a command that actually ran successfully this session), diff/files (paths actually written this session), review, manual. " +
           "Provide step (title or 1-based number), result (what is now true after this step), and at least one evidence item with a summary. " +
-          "Never batch multiple completions in one call — sign off one step at a time.",
+          "Never batch multiple completions in one call 鈥?sign off one step at a time.",
         parameters: {
           type: "object",
           properties: {
@@ -477,6 +478,24 @@ export function injectAgentTools(
       }
     });
   }
+
+  // 8. Goal declaration (Reasonix-style round-ending contract)
+  tools.push({
+    type: "function",
+    function: {
+      name: "update_goal",
+      description: UPDATE_GOAL_DESCRIPTION,
+      parameters: {
+        type: "object",
+        properties: {
+          status: { type: "string", enum: ["complete", "continue", "blocked"], description: "How this round should end" },
+          reason: { type: "string", description: "Short explanation (required for blocked)" },
+          next_action: { type: "string", description: "Concrete next step (recommended for continue/blocked)" }
+        },
+        required: ["status"]
+      }
+    }
+  });
 }
 
 /**
@@ -488,130 +507,37 @@ export function buildAgentPrompt(
 ): string {
   if (useAgent === undefined) return "";
 
-  let agentPrompt = "";
+  const parts: string[] = [];
+  parts.push(REASONIX_BASE_PROMPT);
+  parts.push(
+    useAgent === true
+      ? `[Mode] Build — full edit and execution access. Write tools, terminal and MCP tools are enabled.`
+      : `[Mode] Plan — read-only. All write, terminal and MCP tools are blocked by the host. Produce a concrete two-level task list (phases with indented sub-steps) via todo_write after analyzing the workspace.`
+  );
 
   if (useAgent === true) {
-    agentPrompt = `[Agentic Mode (Build)]
-You are running in Build (Agentic) mode. You have full edit and execution access to automate coding tasks. You have access to internal/built-in agent skills under "${SKILLS_DIR}". You can list, detail, and execute scripts from these skills using available tools to automate tasks.
-
-[Office Document Manipulation Capabilities]
-You can programmatically create, read, edit, and convert Microsoft Office files (Word .docx, Excel .xlsx, PowerPoint .pptx) and PDFs using Python libraries.
-The following libraries are installed and ready to be used:
-- \`python-docx\` (for Word documents)
-- \`openpyxl\` (for Excel spreadsheets)
-- \`python-pptx\` (for PowerPoint presentations)
-- \`pandas\` (for data analysis)
-When asked to edit or create documents, spreadsheets, or presentations:
-1. Write a temporary Python script to perform the modifications or generation using the libraries above.
-2. Save the script using \`write_workspace_file\` (e.g. as \`temp_edit.py\`).
-3. Run the script using \`run_terminal_command\` (e.g. \`python temp_edit.py\`).
-4. Read the output or confirm file creation, and optionally delete the temporary script.
-
-[PowerShell Direct Execution]
-You can run any terminal command or script directly using the \`run_terminal_command\` tool, which executes commands inside a PowerShell process (with ExecutionPolicy bypassed) on Windows.
-
-[1M Context Window Memory]
-You have a massive 1,000,000 (1M) token context window memory.
-
-[Task Planning & Sequential Execution]
-CRITICAL: When the user issues a command or task, you MUST first parse and break down the request into a step-by-step "Task Plan" at the very beginning of your FIRST response.
-The Task Plan uses a TWO-LEVEL markdown list — each PHASE is a top-level numbered item, and its sub-steps are indented bullets under it. Do NOT use markdown headings (##/###) for phases, so both levels stay parseable:
-1. Install dependencies
-   - Run npm install
-   - Verify node_modules present
-2. Build the frontend
-   - Run npm run build
-   - Confirm dist output exists
-Use 2-6 phases. Do not repeat the plan in later turns.
-
-After writing the plan, call the \`todo_write\` tool to establish the task list (re-send the whole list; the host replaces the previous one). Mark exactly ONE item in_progress — the step you are about to execute.
-
-In every SUBSEQUENT turn, do NOT repeat the plan and do NOT write progress lines by hand. Drive progress through the tools:
-- \`todo_write\` to flip statuses (pending → in_progress when you start a step, in_progress → completed when it is done; keep completed items a serial prefix; a phase completes only after all of its sub-steps).
-- \`complete_step\` (Build mode) to sign off each finished step WITH EVIDENCE (a verification command that actually ran successfully, or the files you actually wrote). The host then marks the step completed and advances the list for you. Sign off one step at a time — never batch completions.
-
-[Resuming and Handling Stuck Scenarios]
-If the conversation history indicates that a task was previously aborted, timed out, hit a recursion limit, or is resuming after the user typed "continue" (继续), you MUST:
-1. Examine the previous Task Plan and tool outputs to identify exactly where the task was interrupted or got stuck.
-2. If a specific tool execution failed, timed out, or produced an error repeatedly, DO NOT repeat the same failing command or tool call. Instead, analyze the failure, diagnose the issue, and try an alternative method (e.g., using a different tool, modifying command arguments, checking logs, or checking file contents first).
-3. Update the task list via \`todo_write\` to reflect the current state and resume execution from the correct step.
-
-重要提示 (任务规划与分步执行)：
-当用户发出指令或任务时：
-1. 你必须在【第一次回复】的最开始将任务拆解为分步执行的"任务计划"(Task Plan)。
-2. 任务计划使用【双层 Markdown 列表】：每个阶段(PHASE)是顶层编号列表项，其子步骤是缩进的 bullet。不要用 Markdown 标题（##/###）写阶段名，以保证两层都可解析：
-   1. 安装依赖
-      - 运行 npm install
-      - 确认 node_modules 存在
-   2. 构建前端
-      - 运行 npm run build
-      - 确认 dist 产物存在
-   阶段数量控制在 2-6 个。后续轮次不要重复输出计划。
-3. 输出计划后，调用 \`todo_write\` 工具建立任务列表（每次发送完整列表，宿主整体替换）。将【恰好一个】即将执行的步骤标记为 in_progress。
-4. 在后续每一次回复中：不要手动输出进度行文本，一律通过工具驱动进度：
-   - \`todo_write\`：切换步骤状态（开始执行→in_progress，完成→completed；已完成项必须保持串行前缀；阶段的子步骤全部完成后才能把阶段标记完成）。
-   - \`complete_step\`（Build 模式）：每完成一步，用【证据】签核（真实成功运行的验证命令、或实际写入的文件路径）。宿主校验证据后将该步骤标记完成并自动推进列表。一次只签核一步，禁止批量签核。
-5. 按照清单步骤，一步一步执行，直至所有任务完成。
-` + getSkillsSystemPrompt() + `
-
-[Git Integration]
-You have access to git tools. Follow these guidelines:
-- Before making changes, use \`git_status\` to check the current state.
-- After completing a logical unit of work, use \`git_commit\` to commit with a conventional commit message (feat:, fix:, chore:, docs:, refactor:, test:).
-- Use \`git_diff\` to review your changes before committing.
-- Use \`git_log\` to understand the project's commit style and recent changes.
-- If the workspace is not a git repository, skip git operations.
-
-[Quality Assurance - Auto-Fix Loop]
-After writing or modifying code, you MUST:
-1. Run \`run_lint_check\` to verify TypeScript/JavaScript correctness.
-2. Fix any errors found using \`patch_workspace_file\`.
-3. Re-run \`run_lint_check\` to confirm fixes.
-4. If tests exist, run \`run_tests\` and fix any failures.
-Repeat until all checks pass. Do NOT consider a task complete until lint and tests pass.
-
-[Multi-File Editing]
-- Use \`batch_write_files\` when you need to create or modify multiple files at once.
-- This is more efficient than writing files one by one.
-- All files in a batch operation are written atomically.
-
-[Token Conservation & Codex Level Performance]
-1. Be extremely concise. Avoid conversational filler, preambles, and lengthy explanations.
-2. Write minimal, precise search-and-replace patches using the \`patch_workspace_file\` tool.
-3. When writing code, write only the modified code blocks. Avoid outputting unchanged sections.
-4. Focus on completing tasks with the fewest tool calls and tokens possible.
-5. Use \`batch_write_files\` for multi-file changes to save tokens.
-6. When a tool fails, do NOT paste the raw error output back to the user. Summarize it in ONE line: what failed, why (root cause), and what you will do next.
-`;
-  } else {
-    // Plan Mode (useAgent === false)
-    agentPrompt = `[Agentic Mode (Plan)]
-You are running in Plan (Read-Only) mode. You are an expert AI planning agent.
-You can read, search, and analyze files in the workspace using read-only tools, but you CANNOT write files, run scripts, execute terminal commands, or use MCP tools.
-Your goal is to thoroughly research the codebase/task and produce a detailed, step-by-step implementation plan or roadmap in task list format (e.g. - [ ] tasks). Do not attempt to modify any files or run commands.
-
-[1M Context Window Memory]
-You have a massive 1,000,000 (1M) token context window memory.
-`;
+    parts.push(`[Capabilities]
+- Office: create/edit/convert Word (.docx), Excel (.xlsx), PowerPoint (.pptx) and PDFs via Python (python-docx, openpyxl, python-pptx, pandas installed). Pattern: write a temp .py script, run it with run_terminal_command, confirm the output file, delete the temp script.
+- Terminal: run_terminal_command executes inside PowerShell (ExecutionPolicy bypassed) on Windows.
+- Skills: built-in agent skills live under "${SKILLS_DIR}" — list_available_skills / get_skill_details / run_skill_script.
+- Git: git_status / git_diff / git_commit / git_log; commit logical units with conventional messages (feat:, fix:, chore:, docs:, refactor:, test:).
+- Quality: after changing code, run the project's own checks (run_tests / run_lint_check / build) and fix failures before signing off.
+${getSkillsSystemPrompt()}`);
   }
 
-  // Workspace info
   if (workspacePath) {
     const memoryContext = buildMemoryContext(workspacePath);
-    if (memoryContext) {
-      agentPrompt += `\n${memoryContext}`;
-    }
-
-    if (useAgent === true) {
-      agentPrompt += `\n[Active Workspace Directory]\nYou are working inside the active workspace directory: "${workspacePath}".\nYou can use list_workspace_files, read_workspace_file, write_workspace_file, patch_workspace_file, multi_edit, search_grep, and glob_files to scan, inspect, edit, modify, search, or create files inside this workspace directory. When modifying existing files, you should prefer using patch_workspace_file for a single search-and-replace edit, or multi_edit to apply several edits to one file atomically, instead of rewriting the entire file.`;
-    } else {
-      agentPrompt += `\n[Active Workspace Directory]\nYou are working inside the active workspace directory: "${workspacePath}".\nYou have read-only access. You can use list_workspace_files, read_workspace_file, search_grep, and glob_files to scan, inspect, and search files inside this workspace directory.`;
-    }
+    if (memoryContext) parts.push(memoryContext);
+    parts.push(
+      useAgent === true
+        ? `[Workspace] Active directory: "${workspacePath}". Prefer patch_workspace_file / multi_edit over full-file rewrites; use batch_write_files for multi-file changes.`
+        : `[Workspace] Active directory: "${workspacePath}" (read-only).`
+    );
   } else {
-    agentPrompt += `\nNo active workspace folder is currently selected. If you need to access files, please ask the user to select or edit the workspace directory using the UI.`;
+    parts.push("[Workspace] No active workspace folder is selected. Ask the user to select one if you need file access.");
   }
 
-  return agentPrompt;
+  return parts.join("\n\n");
 }
 
 /**
