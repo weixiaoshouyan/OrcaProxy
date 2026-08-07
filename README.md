@@ -10,6 +10,7 @@ Orca 是一款专为 AI 开发工具打造的本地多模型智能代理服务�
 
 - **Build 模式**：完全权限，可读写文件、执行命令
 - **Plan 模式**：只读权限，专注调研与任务规划（服务端强制执行只读门控）
+- **Reasonix 风格对话流**：双层任务计划（阶段 + 子步骤）+ `todo_write` 状态机 + `complete_step` 证据签核，宿主自动推进任务列表
 - **任务进度面板**：实时显示任务执行进度
 - **智能滚动**：执行任务时可自由查看历史消息
 
@@ -19,6 +20,7 @@ Orca 是一款专为 AI 开发工具打造的本地多模型智能代理服务�
 - PowerShell 命令行沙箱（危险命令黑名单）
 - Office 文档操作 (Word/Excel/PPT)
 - MCP 服务集成（写入型工具默认需审批）
+- Agent 对话流工具：`todo_write`（任务列表）/ `complete_step`（带证据签核）/ `ask_question`（暂停提问）
 
 ### 模型供应商
 
@@ -41,8 +43,11 @@ v2.1.1（变更记录见 [docs/](docs/architecture.md) 与 git 历史）
 
 ### 方式一：直接运行（推荐）
 
+免安装版（Windows x64）：
+
 ```
-release/win-unpacked/electron.exe
+release/Orca-Proxy-2.1.1-portable.exe   # 单文件免安装版，双击即用
+release/win-unpacked/Orca Proxy.exe    # 免安装目录版
 ```
 
 ### 方式二：源码运行
@@ -105,6 +110,23 @@ npx ts-node apps/server/cli.ts "修复登录页面的 bug" --workspace C:\path\t
 ```
 
 Agent 模式需要本地令牌：通过 `--token <令牌>` 传入，或设置 `LOCAL_AUTH_TOKEN` 环境变量。
+
+---
+
+## Agent 对话流协议（Reasonix 风格）
+
+智能体任务遵循"计划 → 执行 → 签核"的串行工作流，由宿主（服务器）强制执行：
+
+1. **双层任务计划**：首轮回复输出编号阶段 + 缩进子步骤的 Markdown 列表（不用 `##` 标题写阶段），宿主自动将其解析为任务列表。
+2. **`todo_write`**：建立/更新任务列表（每次发送完整列表）。状态机约束：全列表至多一个 `in_progress`；已完成项必须形成串行前缀；阶段（level 0）须等其子步骤（level 1）全部完成后才能标记完成。
+3. **执行**：每开始一步将对应项标为 `in_progress`，完成后标 `completed`。
+4. **`complete_step` 签核**：每完成一步，带上**证据**签核：
+   - `verification`：本会话真实成功运行过的命令（宿主对账工具记录）
+   - `diff` / `files`：本会话实际写入过的文件路径
+   - `manual` / `review`：人工确认（不计入宿主验证）
+   
+   证据无法对账会被拒绝；签核成功后宿主自动将该步骤标记完成并把下一步置为 `in_progress`。
+5. **进度呈现**：任务状态由宿主合成输出（`> 📋 Todos [n/m] ⏳ ...`、`✅ 步骤 — 结果`），模型文本回复保持极简；计划只在首轮出现，不重复输出。
 
 ---
 

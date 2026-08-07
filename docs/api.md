@@ -68,6 +68,17 @@ data: {"type":"agent_done","taskId":"...","goal":"...","status":"completed"}
 data: [DONE]
 ```
 
+## Agent 对话流工具
+
+Agent 模式注入两个任务管理工具（`todo_write` 两种模式可用，`complete_step` 仅 Build 模式）：
+
+| 工具 | 参数 | 宿主行为 |
+|---|---|---|
+| `todo_write` | `todos: [{content, status: pending\|in_progress\|completed, activeForm?, level?}]` | 全量替换任务列表；校验（至多一个 in_progress、completed 串行前缀、阶段子步骤门控）；回执 `Todos updated: N total — X completed, Y in progress, Z pending.` |
+| `complete_step` | `step` / `step_index`、`result`、`evidence: [{kind: verification\|review\|diff\|files\|manual, summary, command?, paths?}]` | 证据对账（验证命令必须本会话成功运行过、路径必须本会话写入过）；通过后标记完成并**自动推进**列表（下一步变 in_progress），输出 `✅ 步骤 — 结果` 合成行 |
+
+任务列表状态通过 `GET /api/tasks/:taskId` 的 `todos` 字段持久化，进度事件经 `/api/agent/stream` 广播（`task_plan` 事件携带 `todos`）。
+
 ## 错误格式
 
 统一 `{ "error": { "message": "...", "type": "..." } }`（OpenAI 风格）或 `{ "type": "error", "error": {...} }`（Responses 风格）。内部异常细节不会回显给客户端，仅记录于服务器日志。
