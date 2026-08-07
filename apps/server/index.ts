@@ -199,6 +199,9 @@ app.use((req, res, next) => {
   if (req.url.startsWith("/api/")) {
     if (req.method === "OPTIONS") return next();
     if (req.url === "/health") return next();
+    // EventSource cannot send custom headers, so the agent SSE stream is
+    // exempt: it only carries read-only progress events (no secrets).
+    if (req.url === "/api/agent/stream") return next();
     if (!isAuthed) {
       return res.status(401).json({ error: "Unauthorized: Invalid or missing local token" });
     }

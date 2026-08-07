@@ -87,7 +87,11 @@ function checkPortAvailable(port) {
 
 function startServer() {
   return new Promise((resolve, reject) => {
-    const bundlePath = path.join(__dirname, '..', 'dist', 'bundle.js');
+    // NOTE: main.js lives at <root>/apps/electron/, so the project root is
+    // TWO levels up in both dev (repo) and packaged (app.asar) layouts:
+    //   dev:  Orca/apps/electron -> Orca
+    //   asar: app.asar/apps/electron -> app.asar
+    const bundlePath = path.join(__dirname, '..', '..', 'dist', 'bundle.js');
     if (!fs.existsSync(bundlePath)) {
       reject(new Error('bundle.js not found at: ' + bundlePath));
       return;
@@ -104,7 +108,7 @@ function startServer() {
       
       // Also copy public directory to userData/public
       const tmpPublic = path.join(app.getPath('userData'), 'public');
-      const srcPublic = path.join(__dirname, '..', 'resources', 'public');
+      const srcPublic = path.join(__dirname, '..', '..', 'resources', 'public');
       
       function copyFolderRecursiveSync(from, to) {
         if (!fs.existsSync(to)) fs.mkdirSync(to, { recursive: true });
@@ -362,9 +366,9 @@ function createWindow() {
 
 function getIconPath() {
   const iconPaths = [
-    path.join(__dirname, '..', 'resources', 'assets', 'icon.ico'),
-    path.join(__dirname, '..', 'resources', 'assets', 'icon.png'),
-    path.join(__dirname, '..', 'resources', 'public', 'favicon.svg')
+    path.join(__dirname, '..', '..', 'resources', 'assets', 'icon.ico'),
+    path.join(__dirname, '..', '..', 'resources', 'assets', 'icon.png'),
+    path.join(__dirname, '..', '..', 'resources', 'public', 'favicon.svg')
   ];
   for (const p of iconPaths) {
     if (fs.existsSync(p)) return p;
@@ -530,7 +534,7 @@ function copyDataFiles() {
   }
 
   // Copy .env if exists in app resources
-  const envSrc = path.join(__dirname, '..', '.env');
+  const envSrc = path.join(__dirname, '..', '..', '.env');
   const envDst = path.join(userData, '.env');
   if (fs.existsSync(envSrc) && !fs.existsSync(envDst)) {
     fs.copyFileSync(envSrc, envDst);
