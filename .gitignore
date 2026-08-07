@@ -28,3 +28,5 @@ frontend/node_modules/.vite-temp/
 
 data/.token
 data/agent-tasks/
+
+bundle.js
