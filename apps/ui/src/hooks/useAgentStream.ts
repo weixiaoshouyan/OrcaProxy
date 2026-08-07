@@ -1,24 +1,34 @@
 // frontend/src/hooks/useAgentStream.ts
-// Agent 实时事件流 - 用 SSE 替代 15s 轮询，任务状态变更秒级到达
+// Agent 实时事件流（SSE）：订阅 GET /api/agent/stream
+// 后端事件协议见 apps/server/agent/events.ts（16 种下划线命名事件）
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 export type AgentEventType =
-  | 'task.started'
-  | 'task.step'
-  | 'task.completed'
-  | 'task.failed'
-  | 'task.paused'
-  | 'task.resumed'
-  | 'tool.start'
-  | 'tool.end'
+  | 'task_start'
+  | 'task_plan'
+  | 'step_start'
+  | 'step_complete'
+  | 'step_fail'
+  | 'tool_start'
+  | 'tool_result'
+  | 'tool_error'
+  | 'reflection'
+  | 'verification'
+  | 'context_compression'
+  | 'task_complete'
+  | 'task_error'
+  | 'usage'
+  | 'checkpoint'
+  | 'text_delta'
+  // 兼容保留（后端目前不发送）
   | 'log'
   | 'ping';
 
 export interface AgentEvent {
   type: AgentEventType;
-  taskId?: string;
+  taskId: string;
   timestamp: number;
-  payload: any;
+  data: Record<string, unknown>;
 }
 
 interface Options {
@@ -30,8 +40,9 @@ interface Options {
 
 /**
  * Agent 实时事件流（SSE）
- * 后端暴露 GET /api/agent/stream 时，前端订阅即可获得 sub-second 任务状态变更
- * 后端未实现时降级为 5s 轮询，不影响功能
+ * 后端暴露 GET /api/agent/stream，事件名为 `agent_event`（命名事件），
+ * 必须用 addEventListener('agent_event') 接收——onmessage 只能收到默认事件。
+ * 连接失败或断开时降级为调用方自行轮询（返回 fallback=true）。
  */
 export function useAgentStream(opts: Options = {}) {
   const {
@@ -70,7 +81,6 @@ export function useAgentStream(opts: Options = {}) {
         setConnected(false);
         // 浏览器 EventSource 默认会自动重连，这里仅做兜底
         if (es.readyState === EventSource.CLOSED) {
-          // 切换为 polling 模式
           if (!fallback) setFallback(true);
           if (!closedRef.current) {
             reconnectTimerRef.current = setTimeout(connect, reconnectDelay);
@@ -78,15 +88,19 @@ export function useAgentStream(opts: Options = {}) {
         }
       };
 
-      es.onmessage = (e) => {
+      // 后端以命名事件 `event: agent_event` 发送（见 events.ts formatAgentEvent）
+      const handleEvent = (e: MessageEvent) => {
         try {
-          const data = JSON.parse(e.data) as AgentEvent;
+          const data = JSON.parse(e.data as string) as AgentEvent;
           setLastEvent(data);
           onEventRef.current?.(data);
         } catch {
           // ignore
         }
       };
+      es.addEventListener('agent_event', handleEvent);
+      // 兼容默认事件（部分代理/中间件会改写 event 字段）
+      es.onmessage = handleEvent;
     } catch {
       setFallback(true);
     }

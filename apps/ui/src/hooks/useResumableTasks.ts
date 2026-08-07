@@ -62,17 +62,17 @@ export function useResumableTasks() {
     }
   }, []);
 
-  // 实时事件流 - 收到事件时立即刷新
+  // 实时事件流 - 收到事件时立即刷新（事件名与后端 events.ts 对齐）
   useAgentStream({
     autoConnect: true,
     onEvent: (e) => {
       if (
-        e.type === 'task.paused' ||
-        e.type === 'task.started' ||
-        e.type === 'task.completed' ||
-        e.type === 'task.failed' ||
-        e.type === 'task.resumed' ||
-        e.type === 'task.step'
+        e.type === 'task_start' ||
+        e.type === 'task_plan' ||
+        e.type === 'task_complete' ||
+        e.type === 'task_error' ||
+        e.type === 'step_complete' ||
+        e.type === 'step_fail'
       ) {
         fetchAll(true);
       }

@@ -33,8 +33,8 @@ interface TaskItem {
 
 type ParsedBlock = ToolBlock | ThinkBlock | TextBlock;
 
-// Pre-compiled regex patterns (avoid recompilation on each call)
-const TOOL_SPLITTER = /^\s*>\s+\*\*Agent Executing[^:*]*:\*\*\s+`([^`]+)`\.\.\./gm;
+// Backend writes: `> 🔧 **Agent Executing Tool:** \`name\`...` (emoji allowed)
+const TOOL_SPLITTER = /^\s*>\s+[^\n]*?\*\*Agent Executing[^:*]*:\*\*\s+`([^`]+)`\.\.\./gm;
 const CODE_BLOCK_REST = /^\n*```\n([\s\S]*?)\n```/;
 const THINK_TAG_OPEN = /<\s*think\s*>/g;
 const THINK_TAG_CLOSE = /<\s*\/\s*think\s*>/g;

@@ -38,12 +38,13 @@
       "signAndEditExecutable": false,
       "target": [
         {
-          "target": "nsis",
+          "target": "portable",
           "arch": [
             "x64"
           ]
         }
-      ]
+      ],
+      "artifactName": "Orca-Proxy-${version}-portable.${ext}"
     },
     "nsis": {
       "oneClick": false,
