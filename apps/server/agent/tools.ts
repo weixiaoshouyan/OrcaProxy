@@ -448,9 +448,13 @@ The Task Plan must be formatted exactly as standard task markdown list and wrapp
    - [/] Task Description (for the active task currently executing)
    - [x] Task Description (for completed tasks)
 </task_plan>
-You MUST output this Task Plan in your text response before calling any tools.
-In every subsequent turn, you MUST update the task plan at the beginning of your text response, still inside <task_plan> tags.
-Execute each task step-by-step.
+You MUST output the FULL Task Plan in your FIRST response, before calling any tools.
+
+In every SUBSEQUENT turn, do NOT repeat the full Task Plan. Instead, output ONE concise progress line at the very start of your response, in this exact format:
+  ⏳ [2/5] 执行：<step description>                    (when starting a step)
+  ✅ [2/5] 完成：<step description>                    (when a step just finished)
+  ❌ [2/5] 失败：<step description> — <one-line reason> (when a step failed)
+Keep it to a single line — no surrounding text, no full checklist replay. Only re-output the full <task_plan> when the plan itself changes (steps added/removed/reworded) or when the user explicitly asks for it. Execute each task step-by-step.
 
 [Resuming and Handling Stuck Scenarios]
 If the conversation history indicates that a task was previously aborted, timed out, hit a recursion limit, or is resuming after the user typed "continue" (继续), you MUST:
@@ -467,8 +471,12 @@ If the conversation history indicates that a task was previously aborted, timed 
    - [/] 任务描述 (表示当前正在执行的任务)
    - [x] 任务描述 (表示已完成的任务)
    </task_plan>
-3. 在进行任何工具调用之前，你必须在文本回复中先输出这个任务清单。
-4. 在后续的每一次迭代回复中，你必须在回复的最开始输出更新后的任务清单（仍包裹在 <task_plan> 标签内）。
+3. 只有在【第一次回复】中才输出完整的任务清单（在任何工具调用之前）。
+4. 在【后续每一次回复】中，绝对不要重复整个任务清单；只需在回复开头输出【一行】进度标记，格式严格如下：
+   ⏳ [2/5] 执行：<步骤描述>                          （开始执行某一步时）
+   ✅ [2/5] 完成：<步骤描述>                          （某一步刚完成时）
+   ❌ [2/5] 失败：<步骤描述> — <一句话原因>            （某一步失败时）
+   只输出一行，前后不要有任何多余文字，不要重贴完整清单。只有当任务清单本身发生变化（增删改步骤）或用户明确要求时，才重新输出完整的 <task_plan>。
 5. 按照清单步骤，一步一步执行，直至所有任务完成。
 ` + getSkillsSystemPrompt() + `
 
@@ -499,6 +507,7 @@ Repeat until all checks pass. Do NOT consider a task complete until lint and tes
 3. When writing code, write only the modified code blocks. Avoid outputting unchanged sections.
 4. Focus on completing tasks with the fewest tool calls and tokens possible.
 5. Use \`batch_write_files\` for multi-file changes to save tokens.
+6. When a tool fails, do NOT paste the raw error output back to the user. Summarize it in ONE line: what failed, why (root cause), and what you will do next.
 `;
   } else {
     // Plan Mode (useAgent === false)

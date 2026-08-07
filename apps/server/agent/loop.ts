@@ -10,7 +10,7 @@ import {
   type TaskState, createTaskState, loadTaskState, saveTaskState, updateStepStatus,
   formatTaskPlan, nextPendingStep, type ToolResultRecord,
 } from "./task-state";
-import { parseTaskPlan, mergeTaskPlan, buildReplanPrompt } from "./planner";
+import { parseTaskPlan, mergeTaskPlan, buildReplanPrompt, parsePlanProgress, applyPlanProgress } from "./planner";
 import { verifyToolResults } from "./verifier";
 import { maybeSummarize } from "../agent/summarizer";
 import { generateReflection, buildReflectionPrompt } from "./reflection";
@@ -903,6 +903,13 @@ if (hasOpenedThinkBlock && !hasClosedThinkBlock) {
         if (parsedPlan.length > 0) {
           mergeTaskPlan(taskState, parsedPlan);
           broadcast("task_plan", taskState.taskId, { steps: parsedPlan.length, phase: taskState.phase });
+        } else {
+          // Reasonix-style one-line progress marker (e.g. "✅ [2/5] 完成：xxx")
+          const progress = parsePlanProgress(accumulatedText);
+          if (progress) {
+            applyPlanProgress(taskState, progress);
+            broadcast("task_plan", taskState.taskId, { steps: taskState.steps.length, phase: taskState.phase });
+          }
         }
       }
       taskState.phase = toolCalls.length > 0 ? "execute" : "done";
@@ -983,7 +990,7 @@ if (hasOpenedThinkBlock && !hasClosedThinkBlock) {
         }
         messages.push({
           role: "system",
-          content: `[Continuation] The task plan still has ${unfinishedCount} unfinished step(s). You ended your turn without calling any tools. Continue the plan now: first output the updated <task_plan>, then call the next tool(s) for the remaining steps. Do not end the turn until every step is complete.`,
+          content: `[Continuation] The task plan still has ${unfinishedCount} unfinished step(s). You ended your turn without calling any tools. Continue the plan now: output a one-line progress marker (e.g. ⏳ [2/5] 执行：<step>) and call the next tool(s) for the remaining steps. Do not end the turn until every step is complete.`,
         });
         truncateMessagesIfNeeded(messages);
         messages = await compressContextIfNeeded(messages, resolved);
@@ -1098,7 +1105,12 @@ if (hasOpenedThinkBlock && !hasClosedThinkBlock) {
       if (taskState) {
         if (choice.message.content) {
           const parsedPlan = parseTaskPlan(choice.message.content);
-          if (parsedPlan.length > 0) mergeTaskPlan(taskState, parsedPlan);
+          if (parsedPlan.length > 0) {
+            mergeTaskPlan(taskState, parsedPlan);
+          } else {
+            const progress = parsePlanProgress(choice.message.content);
+            if (progress) applyPlanProgress(taskState, progress);
+          }
         }
         taskState.phase = "execute";
         saveTaskState(taskState);
@@ -1153,7 +1165,7 @@ if (hasOpenedThinkBlock && !hasClosedThinkBlock) {
         }
         messages.push({
           role: "system" as const,
-          content: `[Continuation] The task plan still has ${unfinishedCount} unfinished step(s). You ended your turn without calling any tools. Continue the plan now: first output the updated <task_plan>, then call the next tool(s) for the remaining steps. Do not end the turn until every step is complete.`,
+          content: `[Continuation] The task plan still has ${unfinishedCount} unfinished step(s). You ended your turn without calling any tools. Continue the plan now: output a one-line progress marker (e.g. ⏳ [2/5] 执行：<step>) and call the next tool(s) for the remaining steps. Do not end the turn until every step is complete.`,
         });
         truncateMessagesIfNeeded(messages);
         messages = await compressContextIfNeeded(messages, resolved);

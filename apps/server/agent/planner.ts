@@ -41,6 +41,42 @@ export function parseTaskPlan(content: string): TaskStep[] {
   return steps;
 }
 
+/**
+ * Parse a one-line progress marker that agents output on turns AFTER the
+ * initial plan (Reasonix-style dialogue flow), e.g.:
+ *   ⏳ [2/5] 执行：安装依赖
+ *   ✅ [2/5] 完成：安装依赖
+ *   ❌ [2/5] 失败：安装依赖 — 原因
+ * Returns null when the content has no such marker.
+ */
+export function parsePlanProgress(content: string): { index: number; total: number; status: TaskStep["status"]; description: string } | null {
+  const m = content.match(/^\s*([✅⏳❌✔️✓✗])\s*\[(\d+)\/(\d+)\]\s*(?:完成|执行|进行中|失败|开始|done|start|running|failed|complete)?\s*[:：]?\s*(.+)$/m);
+  if (!m) return null;
+  const emoji = m[1];
+  let status: TaskStep["status"] = "running";
+  if (emoji === "✅" || emoji === "✔️" || emoji === "✓") status = "completed";
+  else if (emoji === "❌" || emoji === "✗") status = "failed";
+  return {
+    index: parseInt(m[2], 10) - 1,
+    total: parseInt(m[3], 10),
+    status,
+    description: m[4].trim(),
+  };
+}
+
+/**
+ * Apply a one-line progress marker to the task state (by step index).
+ * Returns true when a step was updated.
+ */
+export function applyPlanProgress(state: TaskState, progress: { index: number; status: TaskStep["status"]; description: string }): boolean {
+  if (!Array.isArray(state.steps) || state.steps.length === 0) return false;
+  const step = state.steps[progress.index];
+  if (!step) return false;
+  step.status = progress.status;
+  if (progress.description) step.description = progress.description;
+  return true;
+}
+
 export function mergeTaskPlan(state: TaskState, parsed: TaskStep[]): void {
   // Preserve progress for steps that match. Step descriptions can legitimately
   // collide (e.g. two "Update config" steps), so we only reuse an existing
