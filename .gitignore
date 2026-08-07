@@ -1,12 +1,14 @@
 ﻿node_modules/
 dist/
-public/assets/
+resources/public/assets/
 .env
 data/config.json
 data/billing.json
 data/cache.json
 data/logs/
 data/skills/
+data/code-indexes/
+data/eval/
 release/
 release-build/
 __pycache__/
@@ -16,3 +18,11 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+.electron-builder-cache/
+.electron-cache/
+logs/
+frontend/node_modules/.tmp/
+frontend/node_modules/.vite-temp/
+
+.reasonix/
+

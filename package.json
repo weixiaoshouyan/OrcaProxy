@@ -1,66 +1,83 @@
 {
-    "name": "orca-universal-proxy",
-    "version": "2.1.0",
-    "description": "Universal proxy for Codex CLI, Claude Desktop, and all major Chinese LLM APIs",
-    "main": "main.js",
-    "scripts": {
-        "dev": "ts-node src/index.ts",
-        "build:ui": "cd frontend && npm install && npm run build",
-        "build": "npm run build:ui && tsc && esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.js --format=cjs --minify",
-        "clean": "node -e \"const fs = require('fs'); ['data/billing.json', 'data/config.json', 'data/logs'].forEach(p => fs.rmSync(p, { recursive: true, force: true }))\"",
-        "prepackage": "npm run clean",
-        "start": "electron .",
-        "package": "npm run prepackage && npm run build:ui && tsc && esbuild src/index.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.js --format=cjs --minify && electron-builder --win"
+  "name": "orca-universal-proxy",
+  "version": "2.1.1",
+  "description": "Universal proxy for Codex CLI, Claude Desktop, and all major Chinese LLM APIs",
+  "main": "apps/electron/main.js",
+  "scripts": {
+    "dev": "ts-node apps/server/index.ts",
+    "orca-agent": "ts-node apps/server/cli.ts",
+    "orca-eval": "ts-node apps/server/cli.ts --eval",
+    "build:ui": "cd apps/ui && npm install && npm run build",
+    "build": "npm run build:ui && tsc && esbuild apps/server/index.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.js --format=cjs --minify",
+    "clean": "node -e \"const fs = require('fs'); ['data/billing.json', 'data/config.json', 'data/logs'].forEach(p => fs.rmSync(p, { recursive: true, force: true }))\"",
+    "prepackage": "npm run clean",
+    "test": "node scripts/run-tests.js",
+    "start": "electron .",
+    "package": "npm run prepackage && npm run build:ui && tsc && esbuild apps/server/index.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.js --format=cjs --minify && electron-builder --win",
+    "prepare": "husky"
+  },
+  "build": {
+    "appId": "com.orca.proxy",
+    "productName": "Orca Proxy",
+    "forceCodeSigning": false,
+    "directories": {
+      "output": "release"
     },
-    "build": {
-        "appId": "com.orca.proxy",
-        "productName": "Orca Proxy",
-        "forceCodeSigning": false,
-        "directories": {
-            "output": "release"
-        },
-        "files": [
-            "main.js",
-            "dist/bundle.js",
-            "public/**/*",
-            "assets/**/*",
-            "skills/**/*",
-            "package.json"
-        ],
-        "win": {
-            "signAndEditExecutable": false,
-            "target": [
-                {
-                    "target": "nsis",
-                    "arch": [
-                        "x64"
-                    ]
-                }
-            ]
-        },
-        "nsis": {
-            "oneClick": false,
-            "allowToChangeInstallationDirectory": true,
-            "createDesktopShortcut": true,
-            "createStartMenuShortcut": true,
-            "shortcutName": "Orca Proxy",
-            "runAfterFinish": true
+    "files": [
+      "apps/electron/main.js",
+      "dist/bundle.js",
+      "resources/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "resources/skills/**/*",
+      "resources/public/**/*",
+      "resources/assets/**/*"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
         }
+      ]
     },
-    "dependencies": {
-        "dotenv": "^16.4.0",
-        "express": "^4.21.0",
-        "express-rate-limit": "^7.5.0",
-        "fflate": "^0.8.3"
-    },
-    "devDependencies": {
-        "@types/express": "^4.17.21",
-        "@types/node": "^22.0.0",
-        "electron": "^35.7.5",
-        "electron-builder": "^26.0.0",
-        "esbuild": "^0.28.0",
-        "ts-node": "^10.9.0",
-        "typescript": "^5.6.0"
-    },
-    "license": "MIT"
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Orca Proxy",
+      "runAfterFinish": true
+    }
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.5.0",
+    "fflate": "^0.8.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "electron": "^35.7.5",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.1.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT",
+  "lint-staged": {
+    "apps/server/**/*.ts": [
+      "eslint --fix --max-warnings 0"
+    ],
+    "apps/ui/src/**/*.{ts,tsx}": [
+      "cd apps/ui && eslint --fix --max-warnings 0"
+    ]
+  }
 }

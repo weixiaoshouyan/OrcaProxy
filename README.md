@@ -117,7 +117,7 @@ codex "你好"
 
 ## 项目结构
 
-`
+```
 orca/
 ├── main.js           # Electron 主进程
 ├── src/              # 后端源码
@@ -126,8 +126,22 @@ orca/
 │   └── ...
 ├── frontend/         # 前端源码 (React)
 ├── skills/           # 内置技能库
+├── docs/             # 项目文档
+│   ├── architecture.md    # 架构文档
+│   ├── api.md            # API 参考
+│   ├── contributing.md   # 贡献指南
+│   └── SKILL_TEMPLATE.md # 技能模板
+├── CHANGELOG.md      # 变更日志
 └── release/          # 打包输出
-`
+```
+
+## 文档
+
+- [架构文档](docs/architecture.md) — 系统架构、数据流、安全模型
+- [API 参考](docs/api.md) — 代理端点、管理 API、SSE 事件格式
+- [贡献指南](docs/contributing.md) — 开发环境、代码规范、提交规范
+- [技能模板](docs/SKILL_TEMPLATE.md) — 技能库 SKILL.md 标准格式
+- [变更日志](CHANGELOG.md) — 版本更新记录
 
 ---
 
