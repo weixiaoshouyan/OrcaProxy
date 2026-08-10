@@ -54,7 +54,8 @@ release/win-unpacked/Orca Proxy.exe    # 免安装目录版
 
 ```bash
 npm install
-npm run build:ui   # 构建前端（首次）
+npm run build:ui       # 构建前端（首次）
+npm run build:server   # 编译后端到 dist/bundle.js（npm start 依赖该产物）
 npm start
 ```
 

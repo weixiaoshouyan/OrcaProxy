@@ -104,7 +104,15 @@ export async function runAgentTask(
       taskState = loadTaskState(resumeId);
       if (taskState) {
         log("info", `[Agent] Resuming task ${taskState.taskId} at phase ${taskState.phase}`);
-        messages = taskState.messages.length ? taskState.messages : messages;
+        if (taskState.messages.length) {
+          // Keep the persisted history and append only genuinely new user
+          // messages (dedupe against the last persisted user message).
+          const lastHistUser = [...taskState.messages].reverse().find((m) => m.role === "user");
+          const fresh = messages.filter(
+            (m) => m.role === "user" && (!lastHistUser || JSON.stringify(m.content) !== JSON.stringify(lastHistUser.content))
+          );
+          messages = [...taskState.messages, ...fresh];
+        }
       }
     }
     if (!taskState) {
@@ -138,6 +146,7 @@ export async function runAgentTask(
   let round = 0;
   let goalStatus: string | undefined = taskState?.metadata?.goalStatus as string | undefined;
   let lastUsage: UsageInfo | null = null;
+  const accUsage = { prompt: 0, completion: 0, cached: 0 };
   let nonStreamData: any = null;
 
   while (true) {
@@ -151,6 +160,7 @@ export async function runAgentTask(
       if (taskState) {
         taskState.phase = "replan";
         taskState.metadata.replanReason = errMsg;
+        taskState.messages = messages;
         saveTaskState(taskState);
       }
       const chunk = mkChunk(null, resolved.model, `\n\n[${errMsg}]\n`, "stop");
@@ -176,6 +186,7 @@ export async function runAgentTask(
           broadcast("task_error", taskState.taskId, { error: pauseNote });
           taskState.phase = "replan";
           taskState.metadata.replanReason = pauseNote;
+          taskState.messages = messages;
           saveTaskState(taskState);
           const pauseChunk = mkChunk(null, resolved.model, `\n\n[${pauseNote}]\n`, "error");
           if (!res.writableEnded) {
@@ -206,6 +217,7 @@ export async function runAgentTask(
       if (taskState) {
         taskState.phase = "replan";
         taskState.metadata.replanReason = errMsg;
+        taskState.messages = messages;
         saveTaskState(taskState);
       }
       const timeoutChunk = mkChunk(null, resolved.model, `\n\n[${errMsg}]\n`, "stop");
@@ -484,6 +496,7 @@ export async function runAgentTask(
       if (taskState) {
         taskState.phase = "replan";
         taskState.metadata.replanReason = interruptedMsg;
+        taskState.messages = messages;
         saveTaskState(taskState);
       }
       const errChunk = mkChunk(null, resolved.model, `\n\n[Agent Stream Error] ${interruptedMsg}\n`, "error");
@@ -496,6 +509,11 @@ export async function runAgentTask(
     }
 
     lastUsage = turn.usage;
+    if (turn.usage) {
+      accUsage.prompt += turn.usage.prompt_tokens || 0;
+      accUsage.completion += turn.usage.completion_tokens || 0;
+      accUsage.cached += turn.usage.prompt_tokens_details?.cached_tokens ?? turn.usage.input_token_details?.cache_read ?? 0;
+    }
 
     // ---- Turn text processing: plan parse / progress marker / seed todos ----
     if (taskState && turn.text) {
@@ -535,13 +553,15 @@ export async function runAgentTask(
         if (!res.writableEnded) res.write("data: " + JSON.stringify(chunk) + "\n\n");
       };
 
+      const toolWorkspacePath = taskState?.workspacePath || body.workspacePath || "";
       const { records, aborted } = await executeToolsInParallel(
-        turn.toolCalls, writeDelta, messages, body.workspacePath || "", res, isClientGone, resolved, taskState, !useAgent
+        turn.toolCalls, writeDelta, messages, toolWorkspacePath, res, isClientGone, resolved, taskState, !useAgent
       );
 
       if (aborted) {
         if (isClientGone()) return;
         if (taskState) {
+          taskState.messages = messages;
           saveTurnCheckpointIfChanged(taskState, messages);
           releaseAllClaims(taskState.taskId);
         }
@@ -612,26 +632,22 @@ export async function runAgentTask(
   }
 
   // ---- Finalize ----
+  const blockedWait = goalStatus === "blocked";
   if (taskState) {
-    taskState.phase = "done";
+    taskState.phase = blockedWait ? "awaiting_user" : "done";
     taskState.messages = messages;
     saveTurnCheckpointIfChanged(taskState, messages);
     releaseAllClaims(taskState.taskId);
     saveTaskState(taskState);
   }
 
-  const promptTok = lastUsage?.prompt_tokens || 0;
-  const compTok = lastUsage?.completion_tokens || 0;
-  let cachedTok = 0;
-  if (lastUsage?.prompt_tokens_details?.cached_tokens !== undefined) {
-    cachedTok = lastUsage.prompt_tokens_details.cached_tokens;
-  } else if (lastUsage?.input_token_details?.cache_read !== undefined) {
-    cachedTok = lastUsage.input_token_details.cache_read;
-  }
+  const promptTok = accUsage.prompt;
+  const compTok = accUsage.completion;
+  const cachedTok = accUsage.cached;
   accumulateCost(resolved.model, promptTok, compTok, cachedTok);
 
   if (body.stream) {
-    if (taskState) {
+    if (taskState && !blockedWait) {
       broadcast("usage", taskState.taskId, {
         promptTokens: promptTok,
         completionTokens: compTok,

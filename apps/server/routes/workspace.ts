@@ -9,6 +9,26 @@ import fs from "fs";
 import { spawn } from "child_process";
 import { log } from "../utils/log";
 
+/** Workspaces picked through the trusted Electron directory dialog. */
+const registeredWorkspaces = new Set<string>();
+// Auto-register the server's own working directory on startup.
+try {
+  registeredWorkspaces.add(path.resolve(process.cwd()));
+} catch { /* ignore */ }
+
+/** Register a workspace path (used by the trusted directory picker). */
+export function registerWorkspace(p: string): boolean {
+  try {
+    const resolved = path.resolve(p);
+    if (resolved === path.parse(resolved).root) return false;
+    if (!fs.existsSync(resolved)) return false;
+    registeredWorkspaces.add(resolved);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 验证目标路径是否在工作区目录内
  * 返回 null 表示合法，否则返回错误信息
@@ -19,24 +39,51 @@ function validateWithinWorkspace(filepath: string, workspacePath: string): strin
   }
   const resolvedFile = path.resolve(filepath);
   const resolvedWorkspace = path.resolve(workspacePath);
+  // Refuse filesystem roots as workspaces ("C:\\", "/") — they would grant
+  // read access to the entire disk.
+  if (resolvedWorkspace === path.parse(resolvedWorkspace).root) {
+    return "Access denied: filesystem root is not a valid workspace";
+  }
   const sep = path.sep;
   if (!resolvedFile.startsWith(resolvedWorkspace + sep) && resolvedFile !== resolvedWorkspace) {
     return "Access denied: file is outside the workspace directory";
   }
-  // 额外 symlink 检查，直接使用 realpathSync 避免 TOCTOU 竞争条件
+  // 额外 symlink 检查，直接使用 realpathSync 避免 TOCTOU 竞争条件。
+  // Failure to resolve either path is treated as DENIED (fail closed): a
+  // missing workspace means the request is stale; a missing target file gets
+  // a proper error instead of being silently treated as valid.
   try {
-    const realFile = fs.realpathSync(resolvedFile);
     const realWorkspace = fs.realpathSync(resolvedWorkspace);
+    const realFile = fs.realpathSync(resolvedFile);
     if (!realFile.startsWith(realWorkspace + sep) && realFile !== realWorkspace) {
       return "Access denied: symlink traversal detected";
     }
   } catch {
-    // 文件不存在时 realpathSync 抛出错误，视为合法
+    return "Access denied: workspace or file does not exist / is inaccessible";
   }
   return null;
 }
 
 export function registerWorkspaceRoutes(app: express.Application): void {
+  // ---- Workspace registration (trusted path source: Electron picker) ----
+  // Registered workspaces are accepted; other valid absolute paths remain
+  // usable (historical localStorage entries), so registration is advisory.
+  app.post("/api/workspace/register", (req, res) => {
+    const { workspacePath } = req.body || {};
+    if (typeof workspacePath !== "string" || !workspacePath.trim()) {
+      return res.status(400).json({ error: "workspacePath is required" });
+    }
+    const p = path.resolve(workspacePath.trim());
+    if (p === path.parse(p).root) {
+      return res.status(400).json({ error: "filesystem root is not a valid workspace" });
+    }
+    if (!fs.existsSync(p)) {
+      return res.status(400).json({ error: "workspace path does not exist" });
+    }
+    registeredWorkspaces.add(p);
+    res.json({ ok: true, registered: [...registeredWorkspaces] });
+  });
+
   // ---- List workspace files ----
   app.post("/api/workspace/list", (req, res) => {
     try {

@@ -58,7 +58,7 @@ import { clearStaleClaims } from "./agent/claims";
 import { scanForInterruptedTasks } from "./services/recovery";
 import { validateRequest } from "./utils/validate";
 import crypto from "crypto";
-import { isBlockedTarget } from "./utils/ssrf";
+import { isBlockedTarget, fetchWithSsrfCheck } from "./utils/ssrf";
 
 dotenv.config({ path: process.env.ORCA_BASE_DIR ? path.join(process.env.ORCA_BASE_DIR, '.env') : undefined });
 
@@ -102,7 +102,7 @@ const LOCAL_AUTH_TOKEN = process.env.LOCAL_AUTH_TOKEN || (() => {
 })();
 if (!process.env.LOCAL_AUTH_TOKEN) {
   log("warn", `[auth] LOCAL_AUTH_TOKEN 未设置：已自动生成令牌并保存到 data/.token（重启后保持不变）。`);
-  log("warn", `[auth] 浏览器访问 http://${HOST}:${PORT}/?token=${LOCAL_AUTH_TOKEN} 完成登录；或设置 LOCAL_AUTH_TOKEN 环境变量固定令牌。`);
+  log("warn", `[auth] 浏览器访问 http://${HOST}:${PORT}/?token=${LOCAL_AUTH_TOKEN.slice(0, 4)}…${LOCAL_AUTH_TOKEN.slice(-4)} 完成登录（完整令牌见 data/.token）；或设置 LOCAL_AUTH_TOKEN 环境变量固定令牌。`);
 }
 
 // ---- Express App ----
@@ -175,9 +175,15 @@ app.use((req, _res, next) => {
 // Security: token is set as HttpOnly cookie on initial page load (GET / with ?token=xxx),
 // then all subsequent requests authenticate via cookie 鈥?never via URL query string.
 app.use((req, res, next) => {
+  // Constant-time comparison to avoid a timing side channel on the token.
+  const tokenMatches = (candidate: unknown): candidate is string =>
+    typeof candidate === "string" &&
+    candidate.length === LOCAL_AUTH_TOKEN.length &&
+    crypto.timingSafeEqual(Buffer.from(candidate), Buffer.from(LOCAL_AUTH_TOKEN));
+
   // On initial page load, transfer a VALID query-string token to HttpOnly cookie
   if (req.method === "GET" && req.url.startsWith("/") && !req.url.startsWith("/api/") && req.query.token) {
-    if (req.query.token === LOCAL_AUTH_TOKEN) {
+    if (tokenMatches(req.query.token)) {
       res.cookie("orca_token", req.query.token, {
         httpOnly: true,
         sameSite: "strict",
@@ -194,7 +200,7 @@ app.use((req, res, next) => {
     ? authHeader.slice(7)
     : undefined;
   const token = headerToken || cookieToken || bearerToken;
-  const isAuthed = token === LOCAL_AUTH_TOKEN;
+  const isAuthed = tokenMatches(token);
 
   if (req.url.startsWith("/api/")) {
     if (req.method === "OPTIONS") return next();
@@ -334,7 +340,7 @@ app.post("/v1/messages", async (req, res) => {
       }
       const abortController = new AbortController();
       attachClientAbort(req, res, abortController, "Claude");
-      const upstreamResp = await fetch(targetUrl, {
+      const upstreamResp = await fetchWithSsrfCheck(targetUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": resolved.apiKey, "anthropic-version": "2023-06-01" },
         body: JSON.stringify(body),
@@ -356,12 +362,22 @@ app.post("/v1/messages", async (req, res) => {
         let clientDisconnected = false;
         req.on("close", () => { clientDisconnected = true; });
         try {
+          let lastDataAt = Date.now();
+          const idleTimer = setInterval(() => {
+            if (Date.now() - lastDataAt > 5 * 60 * 1000) {
+              log("warn", "[Claude Anthropic SSE] No upstream data for 5 minutes — ending stream");
+              try { reader.cancel(); } catch { /* ignore */ }
+              if (!res.writableEnded) res.end();
+            }
+          }, 60_000);
           while (true) {
             if (clientDisconnected) break;
             const { done, value } = await reader.read();
             if (done) break;
+            lastDataAt = Date.now();
             if (!res.writableEnded) res.write(decoder.decode(value, { stream: true }));
           }
+          clearInterval(idleTimer);
         } catch (e) { log("warn", "[Claude Anthropic SSE] Stream error:", e); }
         if (!res.writableEnded) res.end();
       } else {
@@ -381,7 +397,7 @@ app.post("/v1/messages", async (req, res) => {
       }
       const abortController = new AbortController();
       attachClientAbort(req, res, abortController, "Claude");
-      const upstreamResp = await fetch(targetUrl, {
+      const upstreamResp = await fetchWithSsrfCheck(targetUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${resolved.apiKey}` },
         body: JSON.stringify(chatReq),
@@ -458,7 +474,7 @@ app.all("/v1/*", async (req, res) => {
     if (req.headers["content-type"]) headers["Content-Type"] = req.headers["content-type"] as string;
     const abortController = new AbortController();
     attachClientAbort(req, res, abortController, "Pass-through");
-    const resp = await fetch(targetUrl, {
+    const resp = await fetchWithSsrfCheck(targetUrl, {
       method: req.method, headers,
       body: req.method !== "GET" && req.method !== "HEAD" ? JSON.stringify(req.body) : undefined,
       signal: abortController.signal,
@@ -470,7 +486,24 @@ app.all("/v1/*", async (req, res) => {
       res.setHeader("Connection", "keep-alive");
       const reader = (resp.body as any).getReader();
       const decoder = new TextDecoder();
-      while (true) { const { done, value } = await reader.read(); if (done) break; res.write(decoder.decode(value, { stream: true })); }
+      let lastDataAt = Date.now();
+      const idleTimer = setInterval(() => {
+        if (Date.now() - lastDataAt > 5 * 60 * 1000) {
+          log("warn", "[Pass-through] No upstream data for 5 minutes — ending stream");
+          try { reader.cancel(); } catch { /* ignore */ }
+          if (!res.writableEnded) res.end();
+        }
+      }, 60_000);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          lastDataAt = Date.now();
+          res.write(decoder.decode(value, { stream: true }));
+        }
+      } finally {
+        clearInterval(idleTimer);
+      }
       res.end();
     } else {
       const text = await resp.text();

@@ -50,10 +50,13 @@ export function evaluateFinalGate(taskState: TaskState | undefined, goalStatus: 
     };
   }
 
-  // Everything completed. If the model declared complete via update_goal,
-  // respect it; if it declared continue/blocked, let it keep going.
-  if (goalStatus === "continue" || goalStatus === "blocked") {
-    return { shouldContinue: true, reason: "You declared update_goal with a non-complete status — keep working as stated." };
+  // Everything completed. Respect the model's goal declaration:
+  //  - complete: pass (delivery gate passed)
+  //  - continue: keep working
+  //  - blocked: allow the turn to end so the user can reply; the engine
+  //    persists phase="awaiting_user" and the task can be resumed.
+  if (goalStatus === "continue") {
+    return { shouldContinue: true, reason: "You declared update_goal(continue) — keep working as stated." };
   }
   return { shouldContinue: false, reason: undefined };
 }

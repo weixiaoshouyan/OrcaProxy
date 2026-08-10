@@ -299,7 +299,7 @@ export function processChunk(state: StreamState, chunk: Record<string, unknown>)
         });
         const tcData = state.toolCalls.get(idx)!;
         out += sse("response.output_item.added", {
-          type: "response.output_item.added", output_index: idx,
+          type: "response.output_item.added", output_index: idx + 1, // 0 is reserved for the message item
           item: { type: "function_call", id: tcData.fcId, call_id: tcData.id, name: tcData.name, arguments: "", status: "in_progress" },
         });
       }
@@ -308,7 +308,7 @@ export function processChunk(state: StreamState, chunk: Record<string, unknown>)
       if (fn.arguments) {
         tcData.arguments += fn.arguments as string;
         out += sse("response.function_call_arguments.delta", {
-          type: "response.function_call_arguments.delta", output_index: idx, delta: fn.arguments,
+          type: "response.function_call_arguments.delta", output_index: idx + 1, delta: fn.arguments,
         });
       }
     }
@@ -321,12 +321,25 @@ export function generateEndEvents(state: StreamState): string {
   if (!state.started) out += generateStartEvents(state);
 
   if (state.toolCalls.size > 0) {
+    // Close the message item (index 0) first, then each function_call item.
+    out += sse("response.output_text.done", {
+      type: "response.output_text.done", output_index: 0, content_index: 0, text: state.fullText,
+    });
+    out += sse("response.content_part.done", {
+      type: "response.content_part.done", output_index: 0, content_index: 0,
+      part: { type: "output_text", text: state.fullText },
+    });
+    out += sse("response.output_item.done", {
+      type: "response.output_item.done", output_index: 0,
+      item: { type: "message", id: state.itemId, role: "assistant", status: "completed",
+        content: [{ type: "output_text", text: state.fullText }] },
+    });
     for (const [idx, tc] of state.toolCalls) {
       out += sse("response.function_call_arguments.done", {
-        type: "response.function_call_arguments.done", output_index: idx, arguments: tc.arguments,
+        type: "response.function_call_arguments.done", output_index: idx + 1, arguments: tc.arguments,
       });
       out += sse("response.output_item.done", {
-        type: "response.output_item.done", output_index: idx,
+        type: "response.output_item.done", output_index: idx + 1,
         item: { type: "function_call", id: tc.fcId, call_id: tc.id, name: tc.name, arguments: tc.arguments, status: "completed" },
       });
     }
@@ -346,14 +359,17 @@ export function generateEndEvents(state: StreamState): string {
   }
 
   const now = Math.floor(Date.now() / 1000);
+  const msgItem = {
+    type: "message", id: state.itemId, role: "assistant", status: "completed",
+    content: [{ type: "output_text", text: state.fullText }],
+    ...(state.reasoningContent ? { reasoning_content: state.reasoningContent } : {}),
+  };
   const output = state.toolCalls.size > 0
-    ? Array.from(state.toolCalls.values()).map((tc) => ({
+    ? [msgItem, ...Array.from(state.toolCalls.values()).map((tc) => ({
         type: "function_call", id: tc.fcId,
         call_id: tc.id, name: tc.name, arguments: tc.arguments, status: "completed",
-      }))
-    : [{ type: "message", id: state.itemId, role: "assistant", status: "completed",
-        content: [{ type: "output_text", text: state.fullText }],
-        ...(state.reasoningContent ? { reasoning_content: state.reasoningContent } : {}) }];
+      }))]
+    : [msgItem];
 
   out += sse("response.completed", {
     type: "response.completed",

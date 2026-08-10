@@ -129,7 +129,9 @@ export async function resolveHealthyModel(
     const fh = await checkProviderHealth(prov, key);
     if (fh.ok) {
       log("info", `[Health] Fallback to provider ${fallbackId} (latency ${fh.latencyMs}ms)`);
-      return { provider: prov, model: requested || profile?.model || prov.models[0]?.id || "", apiKey: key };
+      // Use the fallback provider's own default model — forwarding the
+      // original provider's model name would 404 on the fallback.
+      return { provider: prov, model: prov.models[0]?.id || profile?.model || "", apiKey: key };
     }
   }
 

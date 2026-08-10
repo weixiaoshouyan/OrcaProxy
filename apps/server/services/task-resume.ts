@@ -71,6 +71,8 @@ export async function resumeTaskInBackground(taskId: string): Promise<void> {
       method: "POST",
       headers,
       body: JSON.stringify(body),
+      // Never let a hung upstream keep the task stuck in resumingTasks.
+      signal: AbortSignal.timeout(60_000),
     });
 
     if (!resp.ok) {

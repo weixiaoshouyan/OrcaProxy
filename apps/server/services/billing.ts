@@ -76,7 +76,7 @@ function cachedPriceFor(price: { inputPrice: number; cachedInputPrice?: number }
   return typeof price.cachedInputPrice === "number" ? price.cachedInputPrice : price.inputPrice * 0.5;
 }
 
-export function logDailyBilling(model: string, total: number, cached: number, uncached: number) {
+export function logDailyBilling(model: string, total: number, cached: number, uncached: number, completion: number = 0) {
   try {
     const today = new Date().toISOString().split("T")[0];
     const currentMonthStr = today.slice(0, 7); // e.g. "2026-06"
@@ -110,19 +110,22 @@ export function logDailyBilling(model: string, total: number, cached: number, un
         total: (current.total || 0) + total,
         cached: (current.cached || 0) + cached,
         uncached: (current.uncached || 0) + uncached,
+        completion: (current.completion || 0) + completion,
       };
     } else if (typeof current === "number") {
       // 兼容并平滑升级老数据格式
       data[today][model] = {
         total: current + total,
-        cached: cached,
-        uncached: uncached,
+        cached,
+        uncached,
+        completion,
       };
     } else {
       data[today][model] = {
         total,
         cached,
         uncached,
+        completion,
       };
     }
 
@@ -175,7 +178,8 @@ export function seedBillingFile() {
             total += (val.total || 0);
             const uncached = val.uncached || 0;
             const cached = val.cached || 0;
-            totalCost += ((uncached * price.inputPrice) + (cached * cachedPriceFor(price))) / 1000000;
+            const completion = val.completion || 0;
+            totalCost += ((uncached * price.inputPrice) + (cached * cachedPriceFor(price)) + (completion * price.outputPrice)) / 1000000;
           }
         }
       }
@@ -197,5 +201,5 @@ export function accumulateCost(model: string, promptTokens: number, completionTo
   addTokens(total);
   addCost(cost);
   log("info", `[Billing] Model: ${model}, Prompt: ${promptTokens} (Cached: ${cachedTokens}), Completion: ${completionTokens}, Cost: $${cost.toFixed(6)}, Cumulative Cost: $${stats.totalCost.toFixed(4)}`);
-  logDailyBilling(model, total, cachedTokens, uncachedTokens + completionTokens);
+  logDailyBilling(model, total, cachedTokens, uncachedTokens, completionTokens);
 }

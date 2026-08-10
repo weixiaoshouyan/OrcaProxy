@@ -16,6 +16,7 @@ import {
   approveMcpTool, rejectMcpApproval, clearPendingApprovals,
 } from "../services/mcp-permissions";
 import { resumeTaskInBackground } from "../services/task-resume";
+import { registerWorkspace } from "./workspace";
 
 // Pending file/dir picker promises (Electron IPC bridge)
 const pendingChooseDirRequests = new Map<string, (result: { path?: string; cancelled?: boolean }) => void>();
@@ -269,7 +270,10 @@ export function registerManagementRoutes(app: express.Application): void {
         const requestId = Math.random().toString(36).substring(2, 15);
         pendingChooseDirRequests.set(requestId, (result) => {
           if (result.cancelled) { res.json({ cancelled: true }); }
-          else if (result.path) { res.json({ ok: true, path: result.path }); }
+          else if (result.path) {
+            registerWorkspace(result.path);
+            res.json({ ok: true, path: result.path });
+          }
           else { res.status(500).json({ error: "No path selected" }); }
           resolve();
         });
@@ -294,6 +298,7 @@ export function registerManagementRoutes(app: express.Application): void {
               (err2: any, stdout2: string) => {
                 const p = stdout2.trim();
                 if (err2 || !p) return res.json({ cancelled: true });
+                registerWorkspace(p);
                 res.json({ ok: true, path: p });
               });
             return;

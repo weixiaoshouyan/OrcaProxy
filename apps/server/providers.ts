@@ -347,6 +347,21 @@ export function getAllProviders(): Provider[] {
   });
 }
 
+// ---- Routing pattern safety ----
+// Routing rules are user-supplied regexes evaluated against request inputs on
+// every request. Reject patterns that enable catastrophic backtracking (ReDoS)
+// or are otherwise unbounded before they reach `new RegExp`.
+
+export function isSafeRoutingPattern(pattern: unknown): boolean {
+  if (typeof pattern !== "string" || pattern.length < 2 || pattern.length > 100) return false;
+  // A group containing a quantifier, followed by another quantifier:
+  // (a+)+, (a*)*, (a|a)+, (a+){2,} — classic exponential backtracking.
+  if (/\([^)]*[+*][^)]*\)[+*{]/.test(pattern)) return false;
+  // Nested/unbounded quantifier chains: a++, a*+.
+  if (/[+*][+*]/.test(pattern)) return false;
+  return true;
+}
+
 export function getProvider(id: string): Provider | undefined {
   return getAllProviders().find((p) => p.id === id);
 }
@@ -416,6 +431,7 @@ export function resolveModel(
   // route the request to the specified provider/model.
   if (tools && tools.length > 0 && activeProfile?.toolRouting) {
     for (const rule of activeProfile.toolRouting) {
+      if (!isSafeRoutingPattern(rule.pattern)) continue;
       try {
         const regex = new RegExp(rule.pattern);
         if (tools.some((name) => regex.test(name))) {
@@ -440,6 +456,7 @@ export function resolveModel(
     ...(cfg.routingRules || []),
   ];
   for (const rule of rules) {
+    if (!isSafeRoutingPattern(rule.pattern)) continue;
     try {
       const regex = new RegExp(rule.pattern);
       if (regex.test(requested)) {

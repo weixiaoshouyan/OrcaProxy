@@ -170,7 +170,10 @@ export function validateRequest(
   body: unknown,
   res: { status: (code: number) => { json: (data: unknown) => void } }
 ): boolean {
-  const key = `${method} ${path}`;
+  // Match on the pathname only — a query string (e.g. POST /api/config?x=1)
+  // must not bypass the route-to-validator mapping.
+  const pathname = path.split("?")[0];
+  const key = `${method} ${pathname}`;
   const validator = ROUTE_VALIDATORS[key];
   if (!validator) return true; // No validator registered, allow through
 

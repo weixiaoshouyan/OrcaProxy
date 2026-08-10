@@ -23,7 +23,7 @@ import {
 } from "../services/mcp-permissions";
 import { ensureToolPairing, dropOrphanedToolResults } from "./compression";
 import { TOOL_TIMEOUT_MS } from "../utils/helpers";
-import { getCachedToolResult, setCachedToolResult, CACHEABLE_TOOLS } from "../services/tool-cache";
+import { getCachedToolResult, setCachedToolResult, CACHEABLE_TOOLS, invalidateCache } from "../services/tool-cache";
 import { logAudit } from "../services/audit";
 import type { ChatMessage, ToolDefinition, ToolCall, StreamChunk, ResolvedModel } from "./types";
 import type { Response } from "express";
@@ -259,18 +259,32 @@ function handleTodoMetaTool(
     const evidence: any[] = Array.isArray(args?.evidence) ? args.evidence : [];
     if (evidence.length === 0) return "Error: at least one evidence item is required.";
 
-    // Build the session ledger from this batch's records: successfully run
-    // commands and successfully written file paths.
+    // Build the session ledger from this batch's records AND the persisted
+    // task history (cross-round evidence): successfully run commands and
+    // successfully written file paths.
     const successCommands = new Set<string>();
     const writtenPaths = new Set<string>();
-    for (const r of records) {
-      if (r.output.startsWith("Error:")) continue;
+    // Same failure markers used by the verifier; exit code is authoritative.
+    const failedOutput = /^\[Exit Code [^0]|\[Command Timeout|^\[Execution Error|^Error:/;
+    const allRecords = [...records, ...(taskState?.results ?? [])];
+    for (const r of allRecords) {
+      if (failedOutput.test(r.output)) continue;
       try {
         const a = JSON.parse(r.arguments);
         if (r.name === "run_terminal_command" && a?.command) successCommands.add(String(a.command).trim());
-        if (r.name === "write_workspace_file" || r.name === "patch_workspace_file" || r.name === "multi_edit" || r.name === "batch_write_files") {
-          const paths: string[] = Array.isArray(a?.paths) ? a.paths : (a?.filePath ? [a.filePath] : []);
-          for (const p of paths) writtenPaths.add(String(p));
+        // Written-path parsing per tool: the write tools use relativeFilePath
+        // (batch_write_files: files[].relativeFilePath), older paths/filePath
+        // kept as fallback.
+        if (r.name === "write_workspace_file" || r.name === "patch_workspace_file" || r.name === "multi_edit") {
+          if (typeof a?.relativeFilePath === "string") writtenPaths.add(a.relativeFilePath);
+        } else if (r.name === "batch_write_files" && Array.isArray(a?.files)) {
+          for (const f of a.files) {
+            if (f && typeof f.relativeFilePath === "string") writtenPaths.add(f.relativeFilePath);
+          }
+        }
+        if (typeof a?.filePath === "string") writtenPaths.add(a.filePath);
+        if (Array.isArray(a?.paths)) {
+          for (const p of a.paths) writtenPaths.add(String(p));
         }
       } catch { /* ignore malformed args */ }
     }
@@ -413,7 +427,7 @@ export async function executeToolsInParallel(
           try { parsedArgs = JSON.parse(tc.function.arguments || "{}"); } catch { /* ignore */ }
 
           if (CACHEABLE_TOOLS.has(toolName)) {
-            const cached = getCachedToolResult(toolName, parsedArgs);
+            const cached = getCachedToolResult(toolName, parsedArgs, workspacePath);
             if (cached !== null) return Promise.resolve(`[Cached] ${cached}`);
           }
 
@@ -466,7 +480,7 @@ export async function executeToolsInParallel(
             result = `Error: ${toolName} failed: ${err.message}`;
           }
           if (CACHEABLE_TOOLS.has(toolName) && !result.startsWith("Error:")) {
-            setCachedToolResult(toolName, parsedArgs, result);
+            setCachedToolResult(toolName, parsedArgs, result, workspacePath);
           }
           outputs.push(result);
         }
@@ -535,6 +549,13 @@ export async function executeToolsInParallel(
           durationMs: batchDuration,
         });
       }
+    }
+
+    // Invalidate the read-only tool cache after any successful write, so
+    // subsequent reads (read_workspace_file / search_grep / glob) see fresh
+    // content instead of up-to-5-minute-old stale results.
+    if (records.some((r) => isWriteTool(r.name) && !r.output.startsWith("Error:"))) {
+      invalidateCache();
     }
 
     if (runningStep) {

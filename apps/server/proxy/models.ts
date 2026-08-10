@@ -7,7 +7,7 @@ import express from "express";
 import { loadConfig, saveConfig, getAllProviders, getProvider, getApiKey } from "../providers";
 import { log } from "../utils/log";
 import { buildProbeUrl } from "../services/health";
-import { isBlockedTarget } from "../utils/ssrf";
+import { isBlockedTarget, fetchWithSsrfCheck } from "../utils/ssrf";
 
 export function registerModelRoutes(app: express.Application): void {
 
@@ -30,7 +30,7 @@ export function registerModelRoutes(app: express.Application): void {
       } else {
         if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
       }
-      const resp = await fetch(targetUrl, { headers });
+      const resp = await fetchWithSsrfCheck(targetUrl, { headers });
       if (!resp.ok) return res.status(resp.status).json({ error: await resp.text() });
       const data = await resp.json() as any;
 
@@ -84,7 +84,7 @@ export function registerModelRoutes(app: express.Application): void {
         const headers: Record<string, string> = {};
         if (provider.id === "anthropic") { if (apiKey) { headers["x-api-key"] = apiKey; headers["anthropic-version"] = "2023-06-01"; } }
         else { if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`; }
-        const resp = await fetch(targetUrl, { headers, signal: AbortSignal.timeout(15000) });
+        const resp = await fetchWithSsrfCheck(targetUrl, { headers, signal: AbortSignal.timeout(15000) });
         if (!resp.ok) { results.push({ provider: provider.id, models: [], error: `HTTP ${resp.status}` }); send("result", { provider: provider.id, models: [], error: `HTTP ${resp.status}` }); continue; }
         const data = await resp.json() as any; let rawModels: any[] = [];
         if (Array.isArray(data)) rawModels = data;

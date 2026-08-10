@@ -383,6 +383,39 @@ const HIGH_RISK_COMMAND_PATTERNS: RegExp[] = [
   /net\s+(user|localgroup|group)/i,                       // user management
 ];
 
+/**
+ * Parse-based guard for rm / Remove-Item: normalizes short and long flags
+ * (-rf, -r -f, --recursive --force, -R, --force) and rejects destructive
+ * targets (filesystem roots, absolute paths, cwd/parent wildcards, $HOME/$PWD).
+ * Plain `rm <relative file>` stays allowed.
+ */
+function isDangerousRmCommand(command: string): boolean {
+  const m = command.match(/\b(rm|Remove-Item)\b/i);
+  if (!m || m.index === undefined) return false;
+  const rest = command.slice(m.index + m[0].length);
+  const flags = new Set<string>();
+  const targets: string[] = [];
+  for (const tok of rest.trim().split(/\s+/)) {
+    if (!tok) continue;
+    if (/^--?[a-zA-Z-]+$/.test(tok) && !tok.includes("=")) {
+      const t = tok.replace(/^-+/, "").toLowerCase();
+      if (t === "r" || t === "recursive" || (t.length === 2 && t.includes("r"))) flags.add("r");
+      if (t === "f" || t === "force" || (t.length === 2 && t.includes("f"))) flags.add("f");
+    } else {
+      targets.push(tok);
+    }
+  }
+  if (flags.size === 0) return false;
+  for (const t of targets) {
+    const unquoted = t.replace(/^["']|["']$/g, "");
+    if (/^(\/|~\/|[A-Za-z]:[\\\/]|\\\\|%[A-Z]%)/.test(unquoted)) return true; // absolute / root
+    if (unquoted === "." || unquoted === ".." || unquoted === "*" || unquoted.includes("..")) return true;
+    if (/^\$(\{?\s*)?(HOME|PWD|OLDPWD)\b/.test(unquoted)) return true;
+    if (unquoted === "/" || unquoted === "~") return true;
+  }
+  return false;
+}
+
 export function executeTerminalCommand(
   command: string,
   workspacePath: string
@@ -396,6 +429,15 @@ export function executeTerminalCommand(
         `Command: ${command}`
       );
     }
+  }
+
+  // 安全：参数解析兜底 —— 捕获 --long flags / 大写 / $HOME 等正则绕过的 rm
+  if (isDangerousRmCommand(command)) {
+    return Promise.resolve(
+      `[BLOCKED] Command rejected by security policy: destructive rm/Remove-Item target. ` +
+      `If this is intentional, please execute it manually in your terminal.\n` +
+      `Command: ${command}`
+    );
   }
 
   // 安全：检测高风险命令并记录警告

@@ -223,6 +223,8 @@ export interface AnthropicStreamState {
   fullText: string;
   toolCalls: Map<number, { id: string; name: string; arguments: string }>;
   contentBlockIndex: number;
+  /** Index of the open text block, or null when no text block is open. */
+  textBlockIndex: number | null;
   started: boolean;
   inputTokens: number;
   outputTokens: number;
@@ -237,6 +239,7 @@ export function createAnthropicStreamState(model: string): AnthropicStreamState 
     fullText: "",
     toolCalls: new Map(),
     contentBlockIndex: 0,
+    textBlockIndex: null,
     started: false,
     inputTokens: 0,
     outputTokens: 0,
@@ -298,18 +301,24 @@ export function processAnthropicChunk(
   // must not be mixed into the normal text stream.
   const content = delta.content as string | undefined;
   if (content) {
-    if (state.fullText.length === 0 && state.toolCalls.size === 0) {
-      // Start a text content block
+    if (state.fullText.length === 0 && state.textBlockIndex === null) {
+      // Open a text block. When tool blocks already exist, the text block is
+      // placed AFTER them so indices never collide (tool blocks occupy
+      // contentBlockIndex..contentBlockIndex+toolCalls.size-1).
+      const textIdx = state.toolCalls.size > 0
+        ? state.contentBlockIndex + state.toolCalls.size
+        : state.contentBlockIndex;
+      state.textBlockIndex = textIdx;
       out += anthropicSse("content_block_start", {
         type: "content_block_start",
-        index: state.contentBlockIndex,
+        index: textIdx,
         content_block: { type: "text", text: "" },
       });
     }
     state.fullText += content;
     out += anthropicSse("content_block_delta", {
       type: "content_block_delta",
-      index: state.contentBlockIndex,
+      index: state.textBlockIndex ?? state.contentBlockIndex,
       delta: { type: "text_delta", text: content },
     });
   }
@@ -323,11 +332,12 @@ export function processAnthropicChunk(
 
       if (!state.toolCalls.has(idx)) {
         // Close text block if open
-        if (state.fullText.length > 0 && state.toolCalls.size === 0) {
+        if (state.fullText.length > 0 && state.toolCalls.size === 0 && state.textBlockIndex !== null) {
           out += anthropicSse("content_block_stop", {
             type: "content_block_stop",
-            index: state.contentBlockIndex,
+            index: state.textBlockIndex,
           });
+          state.textBlockIndex = null;
           state.contentBlockIndex++;
         }
 
@@ -372,11 +382,19 @@ export function generateAnthropicEndEvents(state: AnthropicStreamState): string 
         index: state.contentBlockIndex + i,
       });
     }
+    // A text block may also be open when text arrives after tool calls
+    // (e.g. [tool][text] streams) — close it too.
+    if (state.textBlockIndex !== null) {
+      out += anthropicSse("content_block_stop", {
+        type: "content_block_stop",
+        index: state.textBlockIndex,
+      });
+    }
   } else {
     // Close text block
     out += anthropicSse("content_block_stop", {
       type: "content_block_stop",
-      index: state.contentBlockIndex,
+      index: state.textBlockIndex ?? state.contentBlockIndex,
     });
   }
 

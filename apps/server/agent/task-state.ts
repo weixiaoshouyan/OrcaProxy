@@ -10,7 +10,7 @@ import { resolveBaseDir } from "../utils/base-dir";
 import { log } from "../utils/log";
 
 export type TaskStepStatus = "pending" | "running" | "completed" | "failed";
-export type AgentPhase = "plan" | "execute" | "verify" | "replan" | "pending_approval" | "done";
+export type AgentPhase = "plan" | "execute" | "verify" | "replan" | "pending_approval" | "awaiting_user" | "done";
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 
