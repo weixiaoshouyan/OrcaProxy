@@ -15,6 +15,7 @@ const MODEL_CONTEXT_SIZES: Record<string, number> = {
   "claude-3-opus": 200000, "claude-3-sonnet": 200000, "claude-3-haiku": 200000,
   "claude-3.5-sonnet": 200000, "claude-3-5-haiku": 200000, "claude-3.5-haiku": 200000,
   "claude-sonnet-4": 200000, "claude-opus-4": 200000,
+  "deepseek-v4-flash": 128000, "deepseek-v4-pro": 65536,
   "deepseek-chat": 128000, "deepseek-reasoner": 65536,
   "deepseek-v3": 128000, "deepseek-r1": 128000,
   "gemini-1.5-pro": 1000000, "gemini-1.5-flash": 1000000,
@@ -225,7 +226,9 @@ export async function compressContextIfNeeded(messages: any[], resolved: any): P
     let compressionBody: any;
 
     let compressionModel = resolved.model;
-    if (resolved.provider.id === "deepseek" && compressionModel === "deepseek-reasoner") {
+    if (resolved.provider.id === "deepseek" && compressionModel === "deepseek-v4-pro") {
+      compressionModel = "deepseek-v4-flash";
+    } else if (resolved.provider.id === "deepseek" && compressionModel === "deepseek-reasoner") {
       compressionModel = "deepseek-chat";
     } else if (resolved.provider.id === "qwen" && compressionModel === "qwen-max") {
       compressionModel = "qwen-plus";

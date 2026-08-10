@@ -345,8 +345,12 @@ export function registerManagementRoutes(app: express.Application): void {
   // ---- Custom providers ----
   app.post("/api/custom-providers", (req, res) => {
     try {
-      const { providers: newProviders } = req.body;
-      if (!Array.isArray(newProviders) || newProviders.length === 0) {
+      // Accept both the documented array format ({ providers: [...] }) and a
+      // single provider object (what the UI previously sent).
+      const body = req.body || {};
+      const list = Array.isArray(body.providers) ? body.providers : [body];
+      const newProviders = list.filter((p: any) => p && typeof p.id === "string" && p.id.trim());
+      if (newProviders.length === 0) {
         return res.status(400).json({ error: "providers array required" });
       }
       const current = loadConfig();

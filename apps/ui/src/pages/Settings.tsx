@@ -162,13 +162,24 @@ export default function Settings({ lang, setLang }: SettingsProps) {
 
   const handleAddPricing = () => {
     if (!config || !newModelId) return;
+    const inputPrice = parseFloat(newModelInputPrice);
+    const outputPrice = parseFloat(newModelOutputPrice);
+    if (!(inputPrice > 0) || !(outputPrice > 0)) {
+      toast.warning(lang === 'en' ? 'Input and output prices must be greater than 0' : '输入价格和输出价格必须大于 0');
+      return;
+    }
     const modelPricing = { ...(config.modelPricing || {}) };
     const entry: PricingConfig = {
-      inputPrice: parseFloat(newModelInputPrice) || 0.0,
-      outputPrice: parseFloat(newModelOutputPrice) || 0.0
+      inputPrice,
+      outputPrice
     };
     if (newModelCachedPrice !== '' && newModelCachedPrice !== null) {
-      entry.cachedInputPrice = parseFloat(newModelCachedPrice);
+      const cachedPrice = parseFloat(newModelCachedPrice);
+      if (!(cachedPrice > 0)) {
+        toast.warning(lang === 'en' ? 'Cached input price must be greater than 0' : '缓存命中价格必须大于 0');
+        return;
+      }
+      entry.cachedInputPrice = cachedPrice;
     }
     modelPricing[newModelId] = entry;
     setConfig({ ...config, modelPricing });

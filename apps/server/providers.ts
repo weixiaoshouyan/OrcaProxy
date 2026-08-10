@@ -30,8 +30,8 @@ export const BUILTIN_PROVIDERS: Provider[] = [
     openaiCompatible: true,
     description: "\u6DF1\u5EA6\u6C42\u7D22 - \u9AD8\u6027\u4EF7\u6BD4\u63A8\u7406\u6A21\u578B",
     models: [
-      { id: "deepseek-chat", name: "DeepSeek Chat" },
-      { id: "deepseek-reasoner", name: "DeepSeek Reasoner", reasoning: true },
+      { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+      { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", reasoning: true },
     ],
   },
   {
@@ -123,34 +123,6 @@ export const BUILTIN_PROVIDERS: Provider[] = [
       { id: "deepseek-ai/DeepSeek-V3", name: "DeepSeek V3" },
       { id: "Qwen/Qwen2.5-72B-Instruct", name: "Qwen 2.5 72B" },
       { id: "meta-llama/Meta-Llama-3.1-70B-Instruct", name: "Llama 3.1 70B" },
-    ],
-  },
-  {
-    id: "xiaomi",
-    name: "\u5c0f\u7c73 MiMo",
-    baseUrl: "https://api.xiaomimimo.com",
-    apiKeyEnv: "XIAOMI_API_KEY",
-    openaiCompatible: true,
-    description: "\u5c0f\u7c73 MiMo \u5927\u6a21\u578b (\u666e\u901a API)",
-    models: [
-      { id: "mimo-v2.5-pro", name: "MiMo V2.5 Pro", reasoning: true },
-      { id: "mimo-v2.5", name: "MiMo V2.5" },
-      { id: "mimo-v2-pro", name: "MiMo V2 Pro", reasoning: true },
-      { id: "mimo-v2-omni", name: "MiMo V2 Omni" },
-    ],
-  },
-  {
-    id: "xiaomi-tokenplan",
-    name: "\u5c0f\u7c73 TokenPlan",
-    baseUrl: "https://token-plan-cn.xiaomimimo.com",
-    apiKeyEnv: "XIAOMI_TOKENPLAN_API_KEY",
-    openaiCompatible: true,
-    description: "\u5c0f\u7c73 TokenPlan (\u514d\u8d39\u8bd5\u7528/\u9650\u65f6\u6d41\u91cf)",
-    models: [
-      { id: "mimo-v2.5-pro", name: "MiMo V2.5 Pro", reasoning: true },
-      { id: "mimo-v2.5", name: "MiMo V2.5" },
-      { id: "mimo-v2-pro", name: "MiMo V2 Pro", reasoning: true },
-      { id: "mimo-v2-omni", name: "MiMo V2 Omni" },
     ],
   },
   {
@@ -273,8 +245,6 @@ function defaultConfig(): RuntimeConfig {
     modelPricing: {
       "deepseek-v4-flash": { inputPrice: 1, outputPrice: 2, cachedInputPrice: 0.02 },
       "deepseek-v4-pro": { inputPrice: 3, outputPrice: 6, cachedInputPrice: 0.025 },
-      "deepseek-chat": { inputPrice: 1, outputPrice: 2, cachedInputPrice: 0.02 },
-      "deepseek-reasoner": { inputPrice: 3, outputPrice: 6, cachedInputPrice: 0.025 },
     },
     mcpServers: {},
   };

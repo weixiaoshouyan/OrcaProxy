@@ -554,7 +554,7 @@ function updateClineRooConfig(configPath: string, proxyUrl: string, provider: an
     config.apiProvider = "openai";
     config.openAiBaseUrl = proxyUrl + "/v1";
     config.openAiApiKey = "sk-dummy";
-    config.openAiModelId = provider.models[0]?.id || "deepseek-chat";
+    config.openAiModelId = provider.models[0]?.id || "deepseek-v4-flash";
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
     log("info", "[Launch] Updated config:", configPath);

@@ -482,10 +482,21 @@ export function registerExtendedRoutes(app: express.Application): void {
     const cfg = loadConfig();
     const before = cfg.customProviders?.length || 0;
     cfg.customProviders = (cfg.customProviders || []).filter((p) => p.id !== req.params.id);
-    if (cfg.customProviders.length === before) {
+    let cleaned = cfg.customProviders.length !== before;
+    // Purge stale state tied to this provider id so it stops showing up:
+    // discovered model lists (e.g. a leftover "longcat-2.0") and stored keys.
+    if (cfg.discoveredModels && cfg.discoveredModels[req.params.id]) {
+      delete cfg.discoveredModels[req.params.id];
+      cleaned = true;
+    }
+    if (cfg.providerKeys && cfg.providerKeys[req.params.id]) {
+      delete cfg.providerKeys[req.params.id];
+      cleaned = true;
+    }
+    if (!cleaned) {
       return res.status(404).json({ error: "Custom provider not found" });
     }
     saveConfig(cfg);
-    res.json({ ok: true });
+    res.json({ ok: true, message: `Provider ${req.params.id} removed (including cached models and stored key)` });
   });
 }

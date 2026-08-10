@@ -222,7 +222,7 @@ export default function Providers({ lang }: { lang: Language }) {
         description,
         openaiCompatible
       };
-      await api.post('/api/custom-providers', payload);
+      await api.post('/api/custom-providers', { providers: [payload] });
       toast.success("自定义供应商已添加", name);
       setIsCustomModalOpen(false);
       // Reset form
