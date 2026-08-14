@@ -23,6 +23,7 @@ import {
 } from "../services/mcp-permissions";
 import { ensureToolPairing, dropOrphanedToolResults } from "./compression";
 import { TOOL_TIMEOUT_MS } from "../utils/helpers";
+import { isBlockedTarget } from "../utils/ssrf";
 import { getCachedToolResult, setCachedToolResult, CACHEABLE_TOOLS, invalidateCache } from "../services/tool-cache";
 import { logAudit } from "../services/audit";
 import type { ChatMessage, ToolCall, StreamChunk, ResolvedModel } from "./types";
@@ -168,6 +169,14 @@ export function mkChunk(parsed: StreamChunk | null, model: string, content: stri
 // ---- Fetch with Retry ----
 
 export async function fetchWithRetry(url: string, options: RequestInit & { timeoutMs?: number }, retries = 3, delay = 2000) {
+  // SSRF consistency: every other outbound path (/v1/responses, /v1/messages,
+  // /v1/* pass-through) guards the target; the agent engine's model calls went
+  // through here without one. Centralizing it covers all fetchWithRetry call
+  // sites (agent loop, passthrough, Codex) against metadata/link-local targets.
+  if (isBlockedTarget(url)) {
+    log("warn", `[SSRF] Blocked outbound request to ${url}`);
+    throw new Error(`Blocked target URL (SSRF guard): ${url}`);
+  }
   const timeoutMs = options?.timeoutMs ?? 600000;
   const fetchOptions: RequestInit = { ...options };
   // timeoutMs is transport-level, not part of the upstream request body/headers.

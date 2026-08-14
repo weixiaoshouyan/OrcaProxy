@@ -3,7 +3,7 @@
  */
 import { test, expect } from "./runner";
 
-const { transformAnthropicRequest, createAnthropicStreamState, processAnthropicChunk, generateAnthropicEndEvents, createAnthropicToOpenAIState, processAnthropicToOpenAIChunk } = require("../anthropic");
+const { transformAnthropicRequest, createAnthropicStreamState, processAnthropicChunk, generateAnthropicEndEvents, createAnthropicToOpenAIState, processAnthropicToOpenAIChunk, openAIMessagesToAnthropic } = require("../anthropic");
 
 test("transformAnthropicRequest converts basic request", () => {
   const body = {
@@ -155,6 +155,88 @@ test("transformAnthropicRequest handles tool_result blocks", () => {
   expect(result.messages[0].role).toBe("tool");
   expect(result.messages[0].tool_call_id).toBe("tool_1");
   expect(result.messages[0].content).toBe("file content here");
+});
+
+// ---- openAIMessagesToAnthropic (agent loop → Anthropic Messages API) ----
+
+test("openAIMessagesToAnthropic extracts system text and user message", () => {
+  const { system, messages } = openAIMessagesToAnthropic([
+    { role: "system", content: "You are Orca." },
+    { role: "user", content: "Hello" },
+  ]);
+  expect(system).toBe("You are Orca.");
+  expect(messages.length).toBe(1);
+  expect(messages[0].role).toBe("user");
+  expect(messages[0].content).toBe("Hello");
+});
+
+test("openAIMessagesToAnthropic converts assistant tool_calls to tool_use blocks", () => {
+  const { messages } = openAIMessagesToAnthropic([
+    {
+      role: "assistant",
+      content: "Let me read that.",
+      tool_calls: [{ id: "call_1", type: "function", function: { name: "read_workspace_file", arguments: JSON.stringify({ relativeFilePath: "src/a.ts" }) } }],
+    },
+  ]);
+  expect(messages.length).toBe(1);
+  expect(messages[0].role).toBe("assistant");
+  const blocks = messages[0].content as any[];
+  expect(Array.isArray(blocks)).toBe(true);
+  expect(blocks[0].type).toBe("text");
+  expect(blocks[1].type).toBe("tool_use");
+  expect(blocks[1].name).toBe("read_workspace_file");
+  expect(blocks[1].input.relativeFilePath).toBe("src/a.ts");
+});
+
+test("openAIMessagesToAnthropic converts tool results to user tool_result blocks and merges consecutive", () => {
+  const { messages } = openAIMessagesToAnthropic([
+    { role: "tool", tool_call_id: "call_1", content: "file content A" },
+    { role: "tool", tool_call_id: "call_2", content: "file content B" },
+  ]);
+  // Consecutive tool results MUST merge into a single user message —
+  // Anthropic rejects non-alternating roles.
+  expect(messages.length).toBe(1);
+  expect(messages[0].role).toBe("user");
+  const blocks = messages[0].content as any[];
+  expect(blocks.length).toBe(2);
+  expect(blocks[0].type).toBe("tool_result");
+  expect(blocks[0].tool_use_id).toBe("call_1");
+  expect(blocks[1].tool_use_id).toBe("call_2");
+  expect(blocks[1].content).toBe("file content B");
+});
+
+test("openAIMessagesToAnthropic merges consecutive user texts", () => {
+  const { messages } = openAIMessagesToAnthropic([
+    { role: "user", content: "Part one" },
+    { role: "user", content: "Part two" },
+  ]);
+  expect(messages.length).toBe(1);
+  expect(messages[0].content).toContain("Part one");
+  expect(messages[0].content).toContain("Part two");
+});
+
+test("openAIMessagesToAnthropic full agent round-trip alternates roles", () => {
+  const { messages } = openAIMessagesToAnthropic([
+    { role: "system", content: "sys" },
+    { role: "user", content: "Fix the bug" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "write_workspace_file", arguments: "{\"relativeFilePath\":\"a.ts\",\"content\":\"x\"}" } }] },
+    { role: "tool", tool_call_id: "c1", content: "Success" },
+    { role: "assistant", content: "Done." },
+  ]);
+  expect(messages.length).toBe(4); // user, assistant(tool_use), user(tool_result), assistant(text)
+  expect(messages.map((m: any) => m.role).join(",")).toBe("user,assistant,user,assistant");
+  const assistantBlocks = messages[1].content as any[];
+  expect(assistantBlocks[0].type).toBe("tool_use");
+  expect(assistantBlocks[0].input.relativeFilePath).toBe("a.ts");
+});
+
+test("openAIMessagesToAnthropic malformed tool arguments degrade to empty input", () => {
+  const { messages } = openAIMessagesToAnthropic([
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "foo", arguments: "{truncated" } }] },
+  ]);
+  const blocks = messages[0].content as any[];
+  expect(blocks[0].type).toBe("tool_use");
+  expect(blocks[0].input).toEqual({});
 });
 
 console.log("\n✅ All anthropic tests passed!");

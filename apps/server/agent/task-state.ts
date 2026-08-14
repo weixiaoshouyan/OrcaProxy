@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { resolveBaseDir } from "../utils/base-dir";
+import { atomicWriteFileSync } from "../utils/helpers";
 import { log } from "../utils/log";
 
 export type TaskStepStatus = "pending" | "running" | "completed" | "failed";
@@ -114,6 +115,8 @@ export function loadTaskState(taskId: string): TaskState | undefined {
     const raw = fs.readFileSync(p, "utf-8");
     return JSON.parse(raw) as TaskState;
   } catch (e) {
+    // A truncated/corrupt file (crash mid-write, manual edit) silently
+    // returning undefined made tasks vanish with no trace. Log it explicitly.
     log("error", `[TaskState] Failed to load ${taskId}:`, e);
     return undefined;
   }
@@ -122,7 +125,10 @@ export function loadTaskState(taskId: string): TaskState | undefined {
 export function saveTaskState(state: TaskState): void {
   try {
     state.updatedAt = Date.now();
-    fs.writeFileSync(statePath(state.taskId), JSON.stringify(state, null, 2), "utf-8");
+    // Atomic write: a crash mid-save must not truncate the task file (a
+    // corrupt task file is unrecoverable — loadTaskState fails and the task
+    // disappears from the UI).
+    atomicWriteFileSync(statePath(state.taskId), JSON.stringify(state, null, 2));
   } catch (e) {
     log("error", `[TaskState] Failed to save ${state.taskId}:`, e);
   }

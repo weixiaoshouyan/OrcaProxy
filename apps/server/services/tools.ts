@@ -65,8 +65,9 @@ export async function handleAgentToolCall(tc: any, workspacePath: string, cpCont
       // Quick repair: close incomplete strings and objects
       const lastQuoteIndex = fixedStr.lastIndexOf('"');
       const lastBraceIndex = fixedStr.lastIndexOf('}');
+      const neededClosingQuote = lastQuoteIndex > lastBraceIndex;
 
-      if (lastQuoteIndex > lastBraceIndex) {
+      if (neededClosingQuote) {
         fixedStr += '"';
       }
 
@@ -85,6 +86,14 @@ export async function handleAgentToolCall(tc: any, workspacePath: string, cpCont
         } else {
           return `Error: Failed to parse arguments for ${toolName}`;
         }
+      }
+      // Integrity guard for content-writing tools: if the repair had to
+      // append a closing QUOTE, the payload was cut inside a string value —
+      // for write/batch tools that string is the FILE CONTENT, so writing it
+      // would silently persist truncated content. Closing braces alone mean
+      // the content string was complete (only the tail structure was cut).
+      if (neededClosingQuote && (toolName === "write_workspace_file" || toolName === "batch_write_files")) {
+        return `Error: Failed to parse arguments for ${toolName}. File content was truncated mid-string and could not be recovered safely. Please retry with a smaller content block.`;
       }
     }
   } catch (e: any) {

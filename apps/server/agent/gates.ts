@@ -39,6 +39,14 @@ export function evaluateFinalGate(taskState: TaskState | undefined, goalStatus: 
 
   const unfinished = todos.filter((t) => t.status !== "completed");
   if (unfinished.length > 0) {
+    // A declared blocker wins over the unfinished list: the model hit a wall it
+    // cannot cross alone (missing information, needs approval, external
+    // dependency). Forcing it to keep running only burns rounds until the
+    // stall guard fires. Allow the turn to end so the user can reply; the
+    // engine parks the task in awaiting_user (resumable from the Tasks page).
+    if (goalStatus === "blocked") {
+      return { shouldContinue: false, reason: "update_goal(blocked) declared with unfinished steps — pausing for user input." };
+    }
     const inProgress = unfinished.filter((t) => t.status === "in_progress");
     const pending = unfinished.filter((t) => t.status === "pending");
     const parts: string[] = [];

@@ -261,8 +261,10 @@ function defaultConfig(): RuntimeConfig {
 
 let _config: RuntimeConfig | null = null;
 
-/** Validate and sanitize a loaded config object */
-function validateConfig(raw: Record<string, unknown>): Partial<RuntimeConfig> {
+/** Validate and sanitize a loaded config object. Exported so import paths
+ *  (/api/config/import) can run untrusted JSON through the same field-level
+ *  validation instead of merging arbitrary keys. */
+export function validateConfig(raw: Record<string, unknown>): Partial<RuntimeConfig> {
   const cfg: Record<string, unknown> = {};
   if (typeof raw.activeProviderId === "string") cfg.activeProviderId = raw.activeProviderId;
   if (typeof raw.activeProfileId === "string" || raw.activeProfileId === undefined) cfg.activeProfileId = raw.activeProfileId;
@@ -389,6 +391,12 @@ export function isSafeRoutingPattern(pattern: unknown): boolean {
   // A group containing a quantifier, followed by another quantifier:
   // (a+)+, (a*)*, (a|a)+, (a+){2,} — classic exponential backtracking.
   if (/\([^)]*[+*][^)]*\)[+*{]/.test(pattern)) return false;
+  // Alternation groups followed by a quantifier: (a|aa)+$, (x|y)* — ambiguous
+  // alternation over the same prefix is the other common catastrophic form
+  // (e.g. ReDoS in `(a|aa)+$` on long 'a' runs). Routing rules are
+  // user-authored; rejecting these is a safe trade-off (falls back to default
+  // routing) versus letting one bad pattern stall the event loop.
+  if (/\([^)]*\|[^)]*\)\s*[*+]/.test(pattern)) return false;
   // Nested/unbounded quantifier chains: a++, a*+.
   if (/[+*][+*]/.test(pattern)) return false;
   return true;

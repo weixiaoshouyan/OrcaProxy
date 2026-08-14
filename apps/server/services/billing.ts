@@ -69,63 +69,72 @@ function cachedPriceFor(price: { inputPrice: number; cachedInputPrice?: number }
   return typeof price.cachedInputPrice === "number" ? price.cachedInputPrice : price.inputPrice * 0.5;
 }
 
-export function logDailyBilling(model: string, total: number, cached: number, uncached: number, completion: number = 0) {
-  try {
-    const today = new Date().toISOString().split("T")[0];
-    const currentMonthStr = today.slice(0, 7); // e.g. "2026-06"
-    let data: Record<string, Record<string, any>> = {};
-    if (fs.existsSync(BILLING_FILE)) {
-      data = JSON.parse(fs.readFileSync(BILLING_FILE, "utf-8"));
-    }
+// Serialize the daily-billing read-modify-write: concurrent agent streams
+// otherwise read the same file snapshot, each applies its own delta, and the
+// last write wins — silently dropping the other streams' usage (lost update).
+// Node is single-threaded but the awaits between read and write can interleave.
+let billingQueue: Promise<void> = Promise.resolve();
 
-    // 跨月自动重置检查：只保留当前月份的数据，清理旧月份数据
-    let hasOldMonthData = false;
-    const filteredData: Record<string, any> = {};
-    for (const [dateStr, dayData] of Object.entries(data)) {
-      if (dateStr.startsWith(currentMonthStr)) {
-        filteredData[dateStr] = dayData;
-      } else {
-        hasOldMonthData = true;
+export function logDailyBilling(model: string, total: number, cached: number, uncached: number, completion: number = 0): Promise<void> {
+  billingQueue = billingQueue.then(() => {
+    try {
+      const today = new Date().toISOString().split("T")[0];
+      const currentMonthStr = today.slice(0, 7); // e.g. "2026-06"
+      let data: Record<string, Record<string, any>> = {};
+      if (fs.existsSync(BILLING_FILE)) {
+        data = JSON.parse(fs.readFileSync(BILLING_FILE, "utf-8"));
       }
-    }
-    if (hasOldMonthData) {
-      log("info", `[Billing] Auto-resetting billing stats: found data from a different month. Only keeping ${currentMonthStr}`);
-      data = filteredData;
-    }
 
-    if (!data[today]) {
-      data[today] = {};
-    }
+      // 跨月自动重置检查：只保留当前月份的数据，清理旧月份数据
+      let hasOldMonthData = false;
+      const filteredData: Record<string, any> = {};
+      for (const [dateStr, dayData] of Object.entries(data)) {
+        if (dateStr.startsWith(currentMonthStr)) {
+          filteredData[dateStr] = dayData;
+        } else {
+          hasOldMonthData = true;
+        }
+      }
+      if (hasOldMonthData) {
+        log("info", `[Billing] Auto-resetting billing stats: found data from a different month. Only keeping ${currentMonthStr}`);
+        data = filteredData;
+      }
 
-    const current = data[today][model];
-    if (current && typeof current === "object") {
-      data[today][model] = {
-        total: (current.total || 0) + total,
-        cached: (current.cached || 0) + cached,
-        uncached: (current.uncached || 0) + uncached,
-        completion: (current.completion || 0) + completion,
-      };
-    } else if (typeof current === "number") {
-      // 兼容并平滑升级老数据格式
-      data[today][model] = {
-        total: current + total,
-        cached,
-        uncached,
-        completion,
-      };
-    } else {
-      data[today][model] = {
-        total,
-        cached,
-        uncached,
-        completion,
-      };
-    }
+      if (!data[today]) {
+        data[today] = {};
+      }
 
-    atomicWriteFileSync(BILLING_FILE, JSON.stringify(data, null, 2));
-  } catch (e) {
-    log("error", "Failed to save daily billing stats:", e);
-  }
+      const current = data[today][model];
+      if (current && typeof current === "object") {
+        data[today][model] = {
+          total: (current.total || 0) + total,
+          cached: (current.cached || 0) + cached,
+          uncached: (current.uncached || 0) + uncached,
+          completion: (current.completion || 0) + completion,
+        };
+      } else if (typeof current === "number") {
+        // 兼容并平滑升级老数据格式
+        data[today][model] = {
+          total: current + total,
+          cached,
+          uncached,
+          completion,
+        };
+      } else {
+        data[today][model] = {
+          total,
+          cached,
+          uncached,
+          completion,
+        };
+      }
+
+      atomicWriteFileSync(BILLING_FILE, JSON.stringify(data, null, 2));
+    } catch (e) {
+      log("error", "Failed to save daily billing stats:", e);
+    }
+  });
+  return billingQueue;
 }
 
 export function seedBillingFile() {

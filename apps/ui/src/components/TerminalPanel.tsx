@@ -2,7 +2,7 @@
 // Pulls the active task's run_terminal_command results from the API and
 // renders them like a real terminal session (command + stdout/stderr).
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Terminal, X, Trash2, Copy, Loader, RotateCw } from 'lucide-react';
+import { Terminal, Trash2, Copy, Loader, RotateCw } from 'lucide-react';
 import { api } from '../api';
 import type { Language } from '../i18n';
 
@@ -60,14 +60,21 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ taskId, lang }) =>
     }
   }, [entries]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (gen?: number) => {
     if (!taskId) {
       setEntries([]);
       return;
     }
+    const targetId = taskId;
+    const myGen = gen ?? loadGenRef.current;
     try {
       setLoading(true);
-      const { data } = await api.get(`/api/tasks/${taskId}`);
+      const { data } = await api.get(`/api/tasks/${targetId}`);
+      // Stale-response guard: if the task changed or the panel unmounted while
+      // this request was in flight, drop the result — otherwise a late
+      // response overwrites the newer task's output (a race corrected only by
+      // the next 4s poll) or calls setState on an unmounted component.
+      if (myGen !== loadGenRef.current || targetId !== lastTaskIdRef.current) return;
       const task = data as TaskDetailResponse;
       if (task.workspacePath) workspacePathRef.current = task.workspacePath;
       const results: TaskResultRecord[] = task?.results || [];
@@ -83,9 +90,13 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ taskId, lang }) =>
     } catch {
       // keep last entries on transient failures
     } finally {
-      setLoading(false);
+      if (myGen === loadGenRef.current) setLoading(false);
     }
   }, [taskId]);
+
+  // Generation counter: every effect (re)run and every cleanup invalidates all
+  // in-flight loads, so no stale response can land after a task switch/unmount.
+  const loadGenRef = useRef(0);
 
   // P1-8: rerun a failed command directly from the panel (reuses the same
   // sandboxed executor the agent uses, so the dangerous-command blacklist
@@ -110,13 +121,18 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ taskId, lang }) =>
   }, []);
 
   useEffect(() => {
+    // Bump the generation FIRST: any in-flight load from the previous task is
+    // now stale and will be dropped by the load() guard.
+    loadGenRef.current++;
     if (taskId !== lastTaskIdRef.current) {
       lastTaskIdRef.current = taskId;
       setEntries([]);
     }
-    const first = window.setTimeout(() => { void load(); }, 0);
-    const interval = window.setInterval(() => { void load(); }, POLL_MS);
+    const gen = loadGenRef.current;
+    const first = window.setTimeout(() => { void load(gen); }, 0);
+    const interval = window.setInterval(() => { void load(gen); }, POLL_MS);
     return () => {
+      loadGenRef.current++;
       window.clearTimeout(first);
       window.clearInterval(interval);
     };
@@ -151,7 +167,6 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ taskId, lang }) =>
           <button onClick={clear} className="p-1 text-gray-400 hover:text-red-400 transition-colors cursor-pointer" title={lang === 'en' ? 'Clear' : '清空'}>
             <Trash2 className="w-3 h-3" />
           </button>
-          <X className="w-3 h-3 text-gray-500 ml-0.5" />
         </div>
       </div>
 

@@ -4,7 +4,7 @@
 // ============================================================
 
 import express from "express";
-import { loadConfig, saveConfig, getAllProviders, getProvider, getActiveProvider, getApiKey } from "../providers";
+import { loadConfig, saveConfig, getAllProviders, getProvider, getActiveProvider, getApiKey, validateConfig } from "../providers";
 import { initMCPServers, getMCPServerStatuses } from "../mcp";
 import { log } from "../utils/log";
 import { getStats, getTokenHistory } from "../utils/stats";
@@ -217,14 +217,19 @@ export function registerManagementRoutes(app: express.Application): void {
       if (typeof incoming.activeProviderId !== "string" && typeof incoming.providerKeys !== "object") {
         return res.status(400).json({ error: "配置内容不完整，请确认文件来自 Orca 配置导出" });
       }
+      // Field-level validation: only known fields with valid shapes pass
+      // through (validateConfig drops unknown keys / malformed types). This
+      // stops a crafted import from injecting arbitrary mcpServers commands,
+      // providerKeys, or junk fields straight into the live config.
+      const validated = validateConfig(incoming);
       // Safety: never import the listening port (would require a restart and
       // could silently break the running instance); keep the current one.
       const current = loadConfig();
-      const merged = { ...current, ...incoming };
+      const merged = { ...current, ...validated };
       merged.port = current.port;
-      delete merged._format;
-      delete merged._version;
-      delete merged._exportedAt;
+      delete (merged as any)._format;
+      delete (merged as any)._version;
+      delete (merged as any)._exportedAt;
       saveConfig(merged as any);
       log("info", "[Config] Imported config backup (provider keys, profiles, pricing, MCP settings)");
       res.json({ ok: true, message: "配置导入成功（端口保持当前值）" });

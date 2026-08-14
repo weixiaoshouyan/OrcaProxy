@@ -2337,7 +2337,14 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
                     e.stopPropagation(); 
                     if (loadingChats[activeId]) {
                       if (input.trim() || attachedFile) {
-                        handleSend();
+                        // No backend steer-injection exists for a running task —
+                        // silently calling handleSend() (which guards on
+                        // loadingChats) made this button a dead control. Be
+                        // honest instead: the message goes through when the
+                        // current run finishes.
+                        toast.info(lang === 'en'
+                          ? 'Agent is still running — your message will be sent when it finishes.'
+                          : 'Agent 仍在运行中，运行结束后即可发送。');
                       } else {
                         handleStop(); 
                       }
@@ -3885,25 +3892,45 @@ const AssistantMessageContent = ({ content, lang, onFileOp }: AssistantMessagePr
     return parseAssistantMessage(content);
   }, [content]);
 
+  // Stable per-block keys: index-based keys break during streaming when the
+  // trailing text block splits into text + a tool announcement — every later
+  // block shifts down one index and React remounts them, resetting
+  // ThinkingBlock / ToolExecutionBlock expand state and elapsed timers.
+  // Streamed content only ever APPENDS, so each block's family-occurrence
+  // number (text/think/todos/tool:name:label) never changes for existing
+  // blocks — keys stay stable across the whole task.
+  const keyCounts = useRef(new Map<string, number>());
+  keyCounts.current.clear();
+  const blockKey = (block: any): string => {
+    const family = block.type === 'text' ? 'text'
+      : block.type === 'think' ? 'think'
+      : block.type === 'todos' ? 'todos'
+      : `tool:${block.toolName || ''}:${block.label || ''}`;
+    const n = (keyCounts.current.get(family) || 0) + 1;
+    keyCounts.current.set(family, n);
+    return `${block.type}-${n}`;
+  };
+
   // Cursor-style inline timeline: text, thinking, todos and tool activity all
   // flow in order — no "执行过程" grouping panel.
   return (
     <div className="space-y-1.5">
-      {parsedBlocks.map((block, idx) => {
+      {parsedBlocks.map((block) => {
+        const key = blockKey(block);
         if (block.type === 'text') {
           return (
-            <div key={idx} className="space-y-1">
+            <div key={key} className="space-y-1">
               <MemoizedTextBlocks content={block.content} lang={lang} />
             </div>
           );
         }
         if (block.type === 'think') {
-          return <ThinkingBlock key={idx} content={block.content} status={block.status} lang={lang} />;
+          return <ThinkingBlock key={key} content={block.content} status={block.status} lang={lang} />;
         }
         if (block.type === 'todos') {
-          return <TodosRow key={idx} content={block.content} lang={lang} />;
+          return <TodosRow key={key} content={block.content} lang={lang} />;
         }
-        return <ToolExecutionBlock key={idx} block={block} lang={lang} onFileOp={onFileOp} />;
+        return <ToolExecutionBlock key={key} block={block} lang={lang} onFileOp={onFileOp} />;
       })}
     </div>
   );
@@ -3916,12 +3943,23 @@ const TextBlocksContent = ({ content, lang }: { content: string; lang: Language 
     return parseTextWithCodeBlocksAndTasks(content);
   }, [content]);
 
+  // Same family-occurrence keying as AssistantMessageContent: a code fence or
+  // task list appearing mid-stream splits the trailing text block, and
+  // index-based keys would remount the later sub-blocks.
+  const subKeyCounts = useRef(new Map<string, number>());
+  subKeyCounts.current.clear();
+  const subKey = (type: string): string => {
+    const n = (subKeyCounts.current.get(type) || 0) + 1;
+    subKeyCounts.current.set(type, n);
+    return `${type}-${n}`;
+  };
+
   return (
     <>
-      {subBlocks.map((subBlock, sIdx) => {
+      {subBlocks.map((subBlock) => {
         if (subBlock.type === 'text') {
           return (
-            <div key={sIdx} className="orca-markdown">
+            <div key={subKey('text')} className="orca-markdown">
               <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, rehypeSanitize, rehypeSanitizeHardened]}>
                 {subBlock.content}
               </ReactMarkdown>
@@ -3930,7 +3968,7 @@ const TextBlocksContent = ({ content, lang }: { content: string; lang: Language 
         } else if (subBlock.type === 'tasks' && subBlock.tasks) {
           return (
             <TaskListWidget 
-              key={sIdx}
+              key={subKey('tasks')}
               tasks={subBlock.tasks}
               lang={lang}
             />
@@ -3938,7 +3976,7 @@ const TextBlocksContent = ({ content, lang }: { content: string; lang: Language 
         } else {
           return (
             <CodeBlock 
-              key={sIdx} 
+              key={subKey('code')} 
               content={subBlock.content} 
               language={subBlock.language}
               lang={lang}
