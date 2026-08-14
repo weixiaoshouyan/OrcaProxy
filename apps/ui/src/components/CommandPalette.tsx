@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, MessageSquare, Plus, Settings, BarChart2, MonitorPlay, Box, Layers, Shield, Search as SearchIcon, Beaker, ListTodo, GraduationCap, Activity, FileCode } from 'lucide-react';
 import { useShortcuts } from '../hooks/useShortcuts';
+import type { Language } from '../i18n';
 
 interface CommandItem {
   id: string;
@@ -21,13 +22,36 @@ interface Props {
   onNewChat?: () => void;
   onNewBuildPlan?: () => void;
   onClearContext?: () => void;
+  lang?: Language;
 }
 
-export function CommandPalette({ open, onClose, onNewChat, onNewBuildPlan, onClearContext }: Props) {
+export function CommandPalette({ open, onClose, onNewChat, onNewBuildPlan, onClearContext, lang }: Props) {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+  const isEn = lang === 'en';
+  const L = {
+    nav: isEn ? 'Navigation' : '导航',
+    actions: isEn ? 'Actions' : '动作',
+    search: isEn ? 'Search commands, pages, actions...' : '搜索命令、页面、动作...',
+    empty: isEn ? 'No matching commands' : '没有匹配的命令',
+    newChat: isEn ? 'New Chat' : '新建对话',
+    buildPlan: isEn ? 'Build/Plan Mode' : 'Build/Plan 模式',
+    buildPlanDesc: isEn ? 'Toggle Build/Plan mode' : '激活 Build/Plan 模式',
+    clearCtx: isEn ? 'Clear current context' : '清空当前对话上下文',
+    chat: isEn ? 'Chat' : '聊天',
+    dashboard: isEn ? 'Dashboard' : '仪表盘',
+    apps: isEn ? 'App Integrations' : '应用管理',
+    providers: isEn ? 'Providers' : '模型提供商',
+    skills: isEn ? 'Skills' : '技能管理',
+    settings: isEn ? 'Settings' : '设置',
+    logs: isEn ? 'Logs' : '请求日志',
+    tasks: isEn ? 'Agent Tasks' : 'Agent 任务',
+    select: isEn ? 'Select' : '选择',
+    confirm: isEn ? 'Confirm' : '确认',
+    close: isEn ? 'Close' : '关闭',
+  };
 
   useEffect(() => {
     if (open) {
@@ -39,26 +63,26 @@ export function CommandPalette({ open, onClose, onNewChat, onNewBuildPlan, onCle
 
   const items: CommandItem[] = useMemo(() => {
     const navItems: CommandItem[] = [
-      { id: 'nav.chat', title: '聊天', icon: MessageSquare, action: () => navigate('/chat'), group: '导航' },
-      { id: 'nav.dashboard', title: '仪表盘', icon: BarChart2, action: () => navigate('/dashboard'), group: '导航' },
-      { id: 'nav.apps', title: '应用管理', icon: MonitorPlay, action: () => navigate('/apps'), group: '导航' },
-      { id: 'nav.providers', title: '模型提供商', icon: Box, action: () => navigate('/providers'), group: '导航' },
-      { id: 'nav.profiles', title: 'Profiles', description: '切换/管理模型组合', icon: Layers, action: () => navigate('/profiles'), group: '导航' },
-      { id: 'nav.mcp', title: 'MCP Permissions', icon: Shield, action: () => navigate('/mcp-permissions'), group: '导航' },
-      { id: 'nav.codesearch', title: 'Code Search', icon: SearchIcon, action: () => navigate('/code-search'), group: '导航' },
-      { id: 'nav.eval', title: 'Evaluation', icon: Beaker, action: () => navigate('/eval'), group: '导航' },
-      { id: 'nav.tasks', title: '任务', icon: ListTodo, action: () => navigate('/tasks'), group: '导航' },
-      { id: 'nav.skills', title: '技能管理', icon: GraduationCap, action: () => navigate('/skills'), group: '导航' },
-      { id: 'nav.settings', title: '设置', icon: Settings, action: () => navigate('/settings'), group: '导航' },
-      { id: 'nav.logs', title: '请求日志', icon: Activity, action: () => navigate('/logs'), group: '导航' },
+      { id: 'nav.chat', title: L.chat, icon: MessageSquare, action: () => navigate('/chat'), group: L.nav },
+      { id: 'nav.dashboard', title: L.dashboard, icon: BarChart2, action: () => navigate('/dashboard'), group: L.nav },
+      { id: 'nav.apps', title: L.apps, icon: MonitorPlay, action: () => navigate('/apps'), group: L.nav },
+      { id: 'nav.providers', title: L.providers, icon: Box, action: () => navigate('/providers'), group: L.nav },
+      { id: 'nav.profiles', title: 'Profiles', description: isEn ? 'Switch/manage model profiles' : '切换/管理模型组合', icon: Layers, action: () => navigate('/profiles'), group: L.nav },
+      { id: 'nav.mcp', title: 'MCP Permissions', icon: Shield, action: () => navigate('/mcp-permissions'), group: L.nav },
+      { id: 'nav.codesearch', title: 'Code Search', icon: SearchIcon, action: () => navigate('/code-search'), group: L.nav },
+      { id: 'nav.eval', title: 'Evaluation', icon: Beaker, action: () => navigate('/eval'), group: L.nav },
+      { id: 'nav.tasks', title: L.tasks, icon: ListTodo, action: () => navigate('/tasks'), group: L.nav },
+      { id: 'nav.skills', title: L.skills, icon: GraduationCap, action: () => navigate('/skills'), group: L.nav },
+      { id: 'nav.settings', title: L.settings, icon: Settings, action: () => navigate('/settings'), group: L.nav },
+      { id: 'nav.logs', title: L.logs, icon: Activity, action: () => navigate('/logs'), group: L.nav },
     ];
     const actions: CommandItem[] = [
-      { id: 'act.newchat', title: '新建对话', icon: Plus, keywords: ['new', 'chat'], action: () => onNewChat?.(), group: '动作' },
-      { id: 'act.buildplan', title: '打开 Build Plan', description: '激活 Build/Plan 模式', icon: FileCode, keywords: ['plan', 'agent', 'build'], action: () => onNewBuildPlan?.(), group: '动作' },
-      { id: 'act.clear', title: '清空当前对话上下文', icon: Settings, keywords: ['clear', 'reset'], action: () => onClearContext?.(), group: '动作' },
+      { id: 'act.newchat', title: L.newChat, icon: Plus, keywords: ['new', 'chat'], action: () => onNewChat?.(), group: L.actions },
+      { id: 'act.buildplan', title: L.buildPlan, description: L.buildPlanDesc, icon: FileCode, keywords: ['plan', 'agent', 'build'], action: () => onNewBuildPlan?.(), group: L.actions },
+      { id: 'act.clear', title: L.clearCtx, icon: Settings, keywords: ['clear', 'reset'], action: () => onClearContext?.(), group: L.actions },
     ];
     return [...actions, ...navItems];
-  }, [navigate, onNewChat, onNewBuildPlan, onClearContext]);
+  }, [navigate, onNewChat, onNewBuildPlan, onClearContext, L.nav, L.actions, L.chat, L.dashboard, L.apps, L.providers, L.tasks, L.skills, L.settings, L.logs, L.newChat, L.buildPlan, L.buildPlanDesc, L.clearCtx, isEn]);
 
   // Fuzzy scoring: subsequence token-order match, contiguous runs score higher.
   const fuzzyScore = (source: string, query: string): number => {
@@ -142,7 +166,7 @@ export function CommandPalette({ open, onClose, onNewChat, onNewBuildPlan, onCle
       onClick={onClose}
     >
       <div
-        className="w-full max-w-xl bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 fade-in duration-200"
+        className="w-full max-w-xl bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-2xl shadow-[var(--shadow-lg)] overflow-hidden animate-in zoom-in-95 fade-in duration-200"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-border-base)]">
@@ -152,15 +176,15 @@ export function CommandPalette({ open, onClose, onNewChat, onNewBuildPlan, onCle
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="搜索命令、页面、动作..."
-            className="flex-1 bg-transparent outline-none text-sm placeholder:text-[var(--color-text-muted)]"
+            placeholder={L.search}
+            className="flex-1 bg-transparent outline-none text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)]"
           />
           <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-[var(--color-text-muted)] border border-[var(--color-border-base)] rounded">ESC</kbd>
         </div>
         <div className="max-h-[60vh] overflow-y-auto py-2">
           {filtered.length === 0 ? (
             <div className="px-4 py-10 text-center text-sm text-[var(--color-text-muted)]">
-              没有匹配的命令
+              {L.empty}
             </div>
           ) : grouped.map(([group, list]) => (
             <div key={group} className="mb-1">
@@ -176,7 +200,7 @@ export function CommandPalette({ open, onClose, onNewChat, onNewBuildPlan, onCle
                     key={it.id}
                     onClick={() => { it.action(); onClose(); }}
                     onMouseEnter={() => setActiveIndex(globalIdx)}
-                    className={`w-full flex items-center gap-3 px-4 py-2 text-left transition-colors ${
+                    className={`w-full flex items-center gap-3 px-4 py-2 mx-1.5 text-left transition-colors rounded-lg ${
                       isActive ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)]' : 'text-[var(--color-text-primary)]'
                     }`}
                   >
@@ -194,9 +218,9 @@ export function CommandPalette({ open, onClose, onNewChat, onNewBuildPlan, onCle
         </div>
         <div className="px-4 py-2 border-t border-[var(--color-border-base)] bg-[var(--color-bg-base)]/50 flex items-center justify-between text-[10px] text-[var(--color-text-muted)]">
           <div className="flex items-center gap-3">
-            <span><kbd className="px-1 border border-[var(--color-border-base)] rounded">↑</kbd> <kbd className="px-1 border border-[var(--color-border-base)] rounded">↓</kbd> 选择</span>
-            <span><kbd className="px-1 border border-[var(--color-border-base)] rounded">↵</kbd> 确认</span>
-            <span><kbd className="px-1 border border-[var(--color-border-base)] rounded">ESC</kbd> 关闭</span>
+            <span><kbd className="px-1 border border-[var(--color-border-base)] rounded">↑</kbd> <kbd className="px-1 border border-[var(--color-border-base)] rounded">↓</kbd> {L.select}</span>
+            <span><kbd className="px-1 border border-[var(--color-border-base)] rounded">↵</kbd> {L.confirm}</span>
+            <span><kbd className="px-1 border border-[var(--color-border-base)] rounded">ESC</kbd> {L.close}</span>
           </div>
           <span>Orca Command Palette</span>
         </div>

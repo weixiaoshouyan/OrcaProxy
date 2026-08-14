@@ -25,19 +25,28 @@ export const api = axios.create({
 });
 
 // Global toast dispatch on API errors (non-cancelled)
-setupApiInterceptors(api, (apiError) => {
+setupApiInterceptors(api, (apiError, config) => {
   console.error('[API Error]', apiError.toUserMessage(), apiError.detail);
-  // Dispatch a global event that Toast providers can listen for
+  // Dispatch a global event that Toast providers can listen for. The original
+  // axios config rides along so the UI can offer a one-click retry.
   window.dispatchEvent(
     new CustomEvent('orca:api-error', {
       detail: {
         message: apiError.toUserMessage(),
         code: apiError.code,
         status: apiError.status,
+        retryable: apiError.retryable,
+        config: config || null,
       },
     })
   );
 });
+
+/** Replay a failed request (used by the retryable error toast, P2-14). */
+export async function retryRequest(config: Record<string, unknown>): Promise<unknown> {
+  const { data } = await api.request(config as any);
+  return data;
+}
 
 export interface Profile {
   id: string;
@@ -314,6 +323,13 @@ export async function fetchEventSource(
   onError: (err: unknown) => void,
   signal?: AbortSignal
 ) {
+  // Last-resort guard against a hung stream (server stalled, proxy dropped
+  // the connection without EOF): if no bytes — not even keep-alive comment
+  // lines — arrive for this long, surface an error instead of hanging the
+  // UI forever on a running "thinking" timer.
+  const IDLE_TIMEOUT_MS = 90_000;
+  let idleTimedOut = false;
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
   try {
     const response = await fetch(`${API_BASE_URL}${url}`, {
       method: 'POST',
@@ -334,10 +350,34 @@ export async function fetchEventSource(
 
     if (!reader) throw new Error("No reader");
 
+    const armWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        watchdog = null;
+        idleTimedOut = true;
+        try { reader.cancel('idle timeout'); } catch { /* already closed */ }
+      }, IDLE_TIMEOUT_MS);
+    };
+    const disarmWatchdog = () => {
+      if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+    };
+    armWatchdog();
+
     let buffer = '';
     while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
+      let result: { value?: Uint8Array; done: boolean };
+      try {
+        result = await reader.read();
+      } catch (e) {
+        // Cancelling the reader (watchdog) makes read() reject with an
+        // AbortError — rethrow as a plain Error so the caller does not
+        // mistake it for a user-initiated stop.
+        if (idleTimedOut) throw new Error('SSE stream idle timeout');
+        throw e;
+      }
+      if (result.done) break;
+      armWatchdog(); // any upstream data resets the idle window
+      const value = result.value;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || ''; // Keep the last incomplete line in the buffer
@@ -370,8 +410,39 @@ export async function fetchEventSource(
       }
     }
     
+    disarmWatchdog();
+    if (idleTimedOut) {
+      onError(new Error('SSE stream idle timeout'));
+      return;
+    }
     onDone();
   } catch (e) {
-    onError(e);
+    if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+    if (idleTimedOut && !(e instanceof Error && e.message === 'SSE stream idle timeout')) {
+      onError(new Error('SSE stream idle timeout'));
+    } else {
+      onError(e);
+    }
   }
+}
+
+// ---- Electron integration (desktop shell) ----
+
+export interface ElectronStatus {
+  isElectron: boolean;
+  supported: boolean;
+  autostart: boolean;
+  error?: string;
+}
+
+/** Query whether the app runs inside the Electron desktop shell and its autostart state. */
+export async function getElectronStatus(): Promise<ElectronStatus> {
+  const { data } = await api.get('/api/electron/status');
+  return data;
+}
+
+/** Enable/disable "open at login" (Electron desktop only). */
+export async function setAutostart(enabled: boolean): Promise<{ ok: boolean; autostart: boolean; error?: string }> {
+  const { data } = await api.post('/api/electron/autostart', { enabled });
+  return data;
 }

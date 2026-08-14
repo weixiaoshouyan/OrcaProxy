@@ -30,7 +30,7 @@ const AssistantMessageContent = ({ content, lang, onFileOp, isStreaming }: Assis
         if (block.type === 'text') {
           return (
             <div key={idx} className="space-y-1">
-              <MemoizedTextBlocks content={block.content} isStreaming={isStreaming} />
+              <MemoizedTextBlocks content={block.content} isStreaming={isStreaming} lang={lang} />
             </div>
           );
         } else if (block.type === 'think') {
@@ -41,6 +41,12 @@ const AssistantMessageContent = ({ content, lang, onFileOp, isStreaming }: Assis
               status={block.status}
               lang={lang}
             />
+          );
+        } else if (block.type === 'todos') {
+          return (
+            <div key={idx} className="text-[11px] text-[var(--color-text-muted)] px-1 py-0.5 select-none">
+              {block.content}
+            </div>
           );
         } else {
           return (
@@ -59,7 +65,7 @@ const AssistantMessageContent = ({ content, lang, onFileOp, isStreaming }: Assis
 
 export const MemoizedAssistantMessage = React.memo(AssistantMessageContent);
 
-const MarkdownRenderer = ({ content }: { content: string }) => (
+const MarkdownRenderer = ({ content, lang }: { content: string; lang: Language }) => (
   <ReactMarkdown
     remarkPlugins={[remarkGfm]}
     rehypePlugins={[
@@ -71,7 +77,7 @@ const MarkdownRenderer = ({ content }: { content: string }) => (
       code: ({ className, children }: { className?: string; children?: React.ReactNode }) => {
         const text = String(children ?? '');
         const match = /language-(\w+)/.exec(className ?? '');
-        return <CodeBlock content={text} language={match?.[1] ?? 'text'} />;
+        return <CodeBlock content={text} language={match?.[1] ?? 'text'} lang={lang} />;
       },
     }}
   >
@@ -81,7 +87,7 @@ const MarkdownRenderer = ({ content }: { content: string }) => (
 
 const MemoizedMarkdownRenderer = React.memo(MarkdownRenderer);
 
-const TextBlocksContent = ({ content, isStreaming }: { content: string; isStreaming?: boolean }) => {
+const TextBlocksContent = ({ content, isStreaming, lang }: { content: string; isStreaming?: boolean; lang: Language }) => {
   const throttledContent = useStreamingThrottle(content, !!isStreaming);
   const subBlocks = useMemo(() => {
     return parseTextWithCodeBlocksAndTasks(throttledContent);
@@ -93,7 +99,7 @@ const TextBlocksContent = ({ content, isStreaming }: { content: string; isStream
         if (subBlock.type === 'text') {
           return (
             <div key={sIdx} className="orca-markdown">
-              <MemoizedMarkdownRenderer content={subBlock.content} />
+              <MemoizedMarkdownRenderer content={subBlock.content} lang={lang} />
             </div>
           );
         } else if (subBlock.type === 'tasks' && subBlock.tasks) {
@@ -109,6 +115,7 @@ const TextBlocksContent = ({ content, isStreaming }: { content: string; isStream
               key={sIdx}
               content={subBlock.content}
               language={subBlock.language}
+              lang={lang}
             />
           );
         }

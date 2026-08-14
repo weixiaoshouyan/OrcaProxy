@@ -3,33 +3,16 @@ import path from "path";
 import { loadConfig } from "../providers";
 import { addTokens, addCost, initStats } from "../utils/stats";
 import { atomicWriteFileSync } from "../utils/helpers";
-
-// ---------------------------------------------------------------------------
-// Base directory resolution (replicated from index.ts with adjusted offsets)
-// index.ts lives in src/ , this module lives in src/services/
-// ---------------------------------------------------------------------------
-
-const _isPkg = !!(process as any).pkg;
-const _isSEA = typeof (process as any).isSea !== "undefined" && (process as any).isSea;
-const _isElectron = !!process.env.ORCA_BASE_DIR;
-
-/** Project root (equivalent to _devDir in index.ts) */
-const projectRoot = path.join(__dirname, "..", "..");
-
-/** src/ directory (equivalent to _portableDir in index.ts) */
-const srcDir = path.join(__dirname, "..");
-
-const _BASE_DIR = _isElectron
-  ? process.env.ORCA_BASE_DIR!
-  : _isPkg || _isSEA
-    ? path.dirname(process.execPath)
-    : fs.existsSync(path.join(srcDir, "public"))
-      ? srcDir
-      : projectRoot;
+import { resolveBaseDir, migrateLegacyDataFile } from "../utils/base-dir";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+// Unified BASE_DIR (see utils/base-dir.ts): all runtime data under <BASE_DIR>/data.
+const _BASE_DIR = resolveBaseDir(__dirname, 3);
+// One-time migration: older dev builds wrote billing stats to apps/data/billing.json.
+migrateLegacyDataFile("billing.json", path.join(__dirname, "..", "..", "data"));
 
 export const BILLING_FILE = path.join(_BASE_DIR, "data", "billing.json");
 
@@ -66,10 +49,20 @@ export const stats: BillingStats = {
 // Functions
 // ---------------------------------------------------------------------------
 
+/**
+ * Qualify a model id with its provider id so billing stats distinguish the
+ * same model id served by different providers (e.g. "opencode/deepseek-v4-flash").
+ */
+export function qualifyModel(providerId: string, model: string): string {
+  return model.includes("/") ? model : `${providerId}/${model}`;
+}
+
 export function getModelPricing(model: string): { inputPrice: number; outputPrice: number; cachedInputPrice?: number } {
   const cfg = loadConfig();
   const pricing = cfg.modelPricing || {};
-  return pricing[model] || { inputPrice: 0.0, outputPrice: 0.0 };
+  // Billing keys may be provider-qualified ("opencode/deepseek-v4-flash");
+  // fall back to the bare model id when no exact match exists.
+  return pricing[model] || pricing[model.split("/").pop() || ""] || { inputPrice: 0.0, outputPrice: 0.0 };
 }
 
 function cachedPriceFor(price: { inputPrice: number; cachedInputPrice?: number }): number {

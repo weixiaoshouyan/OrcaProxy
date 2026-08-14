@@ -1,8 +1,8 @@
 import React, { useState, useEffect, Suspense, lazy } from 'react';
-import { HashRouter, Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { api } from './api';
-import { LayoutDashboard, MessageSquare, MonitorPlay, Box, Settings, Activity, Sun, Moon, PanelLeftOpen, PanelLeftClose, GraduationCap } from 'lucide-react';
-import { translate as t, getLanguage } from './i18n';
+import { Box, Sun, Moon, ArrowLeft } from 'lucide-react';
+import { getLanguage } from './i18n';
 import type { Language } from './i18n';
 
 import { PageSkeleton } from './components/Skeleton';
@@ -20,199 +20,11 @@ const CodeSearch = lazy(() => import('./pages/CodeSearch'));
 const EvalDashboard = lazy(() => import('./pages/EvalDashboard'));
 const Tasks = lazy(() => import('./pages/Tasks'));
 
-function Sidebar({ 
-  isDark, 
-  toggleTheme, 
-  lang,
-  isCollapsed,
-  toggleCollapse,
-  accent,
-  setAccent,
-  theme,
-  setTheme
-}: { 
-  isDark: boolean, 
-  toggleTheme: () => void, 
-  lang: Language,
-  isCollapsed: boolean,
-  toggleCollapse: () => void,
-  accent: string,
-  setAccent: (a: string) => void,
-  theme: string,
-  setTheme: (t: string) => void
-}) {
-  const navItems = [
-    { name: t('menu.dashboard', lang), path: '/dashboard', icon: LayoutDashboard },
-    { name: t('menu.chat', lang), path: '/chat', icon: MessageSquare },
-    { name: t('menu.apps', lang), path: '/apps', icon: MonitorPlay },
-    { name: t('menu.providers', lang), path: '/providers', icon: Box },
-    { name: t('menu.skills', lang), path: '/skills', icon: GraduationCap },
-    { name: t('menu.settings', lang), path: '/settings', icon: Settings },
-    { name: t('menu.logs', lang), path: '/logs', icon: Activity },
-  ];
-
-  return (
-    <div className={`h-full bg-[var(--color-bg-sidebar)] border-r border-[var(--color-border-base)] flex flex-col transition-all duration-300 shrink-0 ${
-      isCollapsed ? 'w-[72px]' : 'w-[240px]'
-    }`}>
-      {/* Header */}
-      <div className={`p-4 border-b border-[var(--color-border-base)] flex items-center justify-between gap-2 ${
-        isCollapsed ? 'flex-col py-6' : 'flex-row'
-      }`}>
-        {!isCollapsed ? (
-          <div>
-            <h1 className="text-xl font-extrabold text-[var(--color-primary)] flex items-center gap-2 tracking-tight">
-              <Box className="w-6 h-6 shrink-0" /> Orca
-            </h1>
-            <div className="text-xs text-[var(--color-text-muted)] mt-1.5 font-medium">Universal Proxy v2.1.0</div>
-          </div>
-        ) : (
-          <Box className="w-6 h-6 text-[var(--color-primary)]" />
-        )}
-        <button 
-          onClick={toggleCollapse}
-          className={`p-1.5 rounded-lg border border-[var(--color-border-base)] bg-[var(--color-bg-base)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-all cursor-pointer ${
-            isCollapsed ? 'mt-2' : ''
-          }`}
-          title={isCollapsed ? (lang === 'en' ? 'Expand' : '展开') : (lang === 'en' ? 'Collapse' : '收起')}
-        >
-          {isCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
-        </button>
-      </div>
-      
-      {/* Navigation */}
-      <div className="flex-1 py-5 px-3 space-y-1 overflow-y-auto">
-        {!isCollapsed && (
-          <div className="text-[11px] uppercase tracking-widest text-[var(--color-text-muted)] font-bold px-3 mb-3">
-            Menu
-          </div>
-        )}
-        {navItems.map(item => (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            className={({ isActive }) =>
-              `flex items-center rounded-xl text-[13px] font-medium transition-all duration-200 ${
-                isCollapsed ? 'justify-center p-2.5 w-10 h-10 mx-auto' : 'gap-3 px-3 py-2.5'
-              } ${
-                isActive 
-                  ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)] font-semibold shadow-sm' 
-                  : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'
-              }`
-            }
-            title={isCollapsed ? item.name : undefined}
-          >
-            <item.icon className="w-[18px] h-[18px] shrink-0" />
-            {!isCollapsed && <span>{item.name}</span>}
-          </NavLink>
-        ))}
-      </div>
-      
-      {/* Bottom Settings & Status */}
-      <div className="p-4 border-t border-[var(--color-border-base)] space-y-3">
-        <button 
-          onClick={toggleTheme}
-          className={`flex items-center rounded-xl text-[13px] font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] transition-all duration-200 ${
-            isCollapsed ? 'w-10 h-10 justify-center mx-auto' : 'w-full justify-between px-3 py-2.5'
-          }`}
-          title={isCollapsed ? (lang === 'en' ? 'Toggle theme' : '切换主题') : undefined}
-        >
-          {isCollapsed ? (
-            isDark ? <Moon className="w-[18px] h-[18px]" /> : <Sun className="w-[18px] h-[18px]" />
-          ) : (
-            <>
-              <div className="flex items-center gap-3">
-                {isDark ? <Moon className="w-[18px] h-[18px]" /> : <Sun className="w-[18px] h-[18px]" />}
-                <span>{t('sidebar.appearance', lang)}</span>
-              </div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] bg-[var(--color-bg-base)] px-2 py-0.5 rounded-md border border-[var(--color-border-base)]">
-                {isDark ? 'DARK' : 'LIGHT'}
-              </div>
-            </>
-          )}
-        </button>
-
-        {!isCollapsed && (
-          <div className="flex items-center gap-1.5 px-1 pt-0.5">
-            {[
-              { id: 'green', cls: 'bg-green-500' },
-              { id: 'blue', cls: 'bg-blue-500' },
-              { id: 'purple', cls: 'bg-purple-500' },
-              { id: 'amber', cls: 'bg-amber-500' },
-              { id: 'rose', cls: 'bg-rose-500' },
-              { id: 'teal', cls: 'bg-teal-500' },
-              { id: 'slate', cls: 'bg-slate-500' },
-              { id: 'nocturne', cls: 'bg-indigo-500' },
-            ].map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setAccent(c.id)}
-                className={`w-5 h-5 rounded-full ${c.cls} transition-all cursor-pointer ${
-                  accent === c.id ? 'ring-2 ring-offset-2 ring-offset-[var(--color-bg-base)] ring-[var(--color-text-secondary)] scale-110' : 'opacity-60 hover:opacity-100'
-                }`}
-                title={c.id}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* Theme presets */}
-        {!isCollapsed && (
-          <div className="mt-3 pt-3 border-t border-[var(--color-border-base)]">
-            <div className="text-[11px] uppercase tracking-widest text-[var(--color-text-muted)] font-bold px-1 pb-2">
-              {lang === 'en' ? 'Theme' : '主题'}
-            </div>
-            <div className="grid grid-cols-2 gap-1.5 px-1">
-              {[
-                { id: 'classic', label: lang === 'en' ? 'Classic' : '经典' },
-                { id: 'dracula', label: 'Dracula' },
-                { id: 'nord', label: 'Nord' },
-                { id: 'catppuccin', label: 'Catppuccin' },
-                { id: 'one-dark', label: 'One Dark' },
-                { id: 'midnight', label: 'Midnight' },
-                { id: 'solarized', label: 'Solarized' },
-              ].map((th) => (
-                <button
-                  key={th.id}
-                  onClick={() => setTheme(th.id)}
-                  className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold transition-all cursor-pointer border ${
-                    theme === th.id
-                      ? 'bg-[var(--color-primary)]/15 border-[var(--color-primary)]/50 text-[var(--color-primary)]'
-                      : 'bg-[var(--color-bg-base)] border-[var(--color-border-base)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
-                  }`}
-                >
-                  {th.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div 
-          className={`flex items-center rounded-xl bg-[var(--color-bg-base)] border border-[var(--color-border-base)] ${
-            isCollapsed ? 'w-10 h-10 justify-center mx-auto' : 'px-3 py-2 gap-2.5'
-          }`}
-          title={isCollapsed ? (lang === 'en' ? 'Service Running' : '服务运行中') : undefined}
-        >
-          <span className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)] animate-pulse shrink-0"></span>
-          {!isCollapsed && (
-            <span className="text-xs font-semibold text-green-600 dark:text-green-400">
-              {t('sidebar.running', lang)}
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function AppContent({
   isDark,
   toggleTheme,
   lang,
   setLang,
-  isCollapsed,
-  toggleCollapse,
   accent,
   setAccent,
   theme,
@@ -222,50 +34,90 @@ function AppContent({
   toggleTheme: () => void,
   lang: Language,
   setLang: (lang: Language) => void,
-  isCollapsed: boolean,
-  toggleCollapse: () => void,
   accent: string,
   setAccent: (a: string) => void,
   theme: string,
   setTheme: (t: string) => void
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const isChatRoute = location.pathname.startsWith('/chat');
 
+  // Ctrl+, — jump to settings from anywhere (chat is the main interface).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === ',') {
+        e.preventDefault();
+        navigate('/settings');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [navigate]);
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-bg-base)] transition-colors duration-300">
-      <Sidebar 
-        isDark={isDark} 
-        toggleTheme={toggleTheme} 
-        lang={lang} 
-        isCollapsed={isCollapsed}
-        toggleCollapse={toggleCollapse}
-        accent={accent}
-        setAccent={setAccent}
-        theme={theme}
-        setTheme={setTheme}
-      />
-      <main className={`flex-1 text-[var(--color-text-primary)] h-full min-w-0 transition-all duration-300 ${
-        isChatRoute ? 'p-0 overflow-hidden' : 'px-10 py-8 overflow-y-auto'
-      }`}>
-        <Suspense fallback={<PageSkeleton />}>
-          <Routes>
-            <Route path="/" element={<Navigate to="/chat" replace />} />
-            <Route path="/dashboard" element={<Dashboard lang={lang} />} />
-            <Route path="/chat" element={<Chat lang={lang} />} />
-            <Route path="/apps" element={<Apps lang={lang} />} />
-            <Route path="/providers" element={<Providers lang={lang} />} />
-            <Route path="/skills" element={<Skills lang={lang} />} />
-            <Route path="/settings" element={<SettingsPage lang={lang} setLang={setLang} />} />
-            <Route path="/logs" element={<Logs lang={lang} />} />
-            <Route path="/profiles" element={<Profiles />} />
-            <Route path="/mcp-permissions" element={<McpPermissions />} />
-            <Route path="/code-search" element={<CodeSearch />} />
-            <Route path="/eval" element={<EvalDashboard />} />
-            <Route path="/tasks" element={<Tasks />} />
-          </Routes>
-        </Suspense>
-      </main>
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--color-bg-base)] transition-colors duration-300">
+      {/* 窗口拖拽条：titleBarStyle: 'hidden' 后必须提供 -webkit-app-region: drag 区域才能拖动窗口。
+          左右按钮区为 no-drag。聊天页全屏时设置入口在聊天页左侧栏底部；设置页全屏打开后
+          通过左侧的"返回聊天"回到主界面。 */}
+      <div
+        className="h-[38px] shrink-0 w-full flex items-center px-4 border-b border-[var(--color-border-base)] bg-[var(--color-bg-sidebar)]/80 backdrop-blur-xl select-none"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
+        <div className="flex items-center gap-2.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <span className="orca-gradient-tile w-[22px] h-[22px] rounded-[6px] flex items-center justify-center text-white shrink-0">
+            <Box className="w-3.5 h-3.5" />
+          </span>
+          <span className="text-[13px] font-extrabold tracking-tight text-[var(--color-text-primary)]">
+            Orca
+            <span className="ml-1.5 text-[9px] font-semibold uppercase tracking-widest text-[var(--color-text-muted)] bg-[var(--color-bg-hover)] px-1.5 py-0.5 rounded border border-[var(--color-border-base)]">
+              {lang === 'en' ? 'Agent' : '智能代理'}
+            </span>
+          </span>
+          {!isChatRoute && (
+            <button
+              onClick={() => navigate('/chat')}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-all cursor-pointer border border-[var(--color-border-base)]"
+              title={lang === 'en' ? 'Back to Chat' : '返回聊天'}
+            >
+              <ArrowLeft className="w-3 h-3" />
+              <span>{lang === 'en' ? 'Chat' : '聊天'}</span>
+            </button>
+          )}
+        </div>
+        <div className="ml-auto flex items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <button
+            onClick={toggleTheme}
+            className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-all cursor-pointer"
+            title={isDark ? (lang === 'en' ? 'Switch to light mode' : '切换到浅色模式') : (lang === 'en' ? 'Switch to dark mode' : '切换到深色模式')}
+          >
+            {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+      <div className="flex flex-1 min-h-0">
+        <main className={`flex-1 text-[var(--color-text-primary)] h-full min-w-0 transition-all duration-300 ${
+          isChatRoute ? 'p-0 overflow-hidden' : 'px-10 py-8 overflow-y-auto'
+        }`}>
+          <Suspense fallback={<PageSkeleton />}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/dashboard" element={<Dashboard lang={lang} />} />
+              <Route path="/chat" element={<Chat lang={lang} isDark={isDark} toggleTheme={toggleTheme} accent={accent} setAccent={setAccent} theme={theme} setTheme={setTheme} />} />
+              <Route path="/apps" element={<Apps lang={lang} />} />
+              <Route path="/providers" element={<Providers lang={lang} />} />
+              <Route path="/settings" element={<SettingsPage lang={lang} setLang={setLang} isDark={isDark} toggleTheme={toggleTheme} accent={accent} setAccent={setAccent} theme={theme} setTheme={setTheme} />} />
+              <Route path="/logs" element={<Logs lang={lang} />} />
+              <Route path="/profiles" element={<Profiles />} />
+              <Route path="/mcp-permissions" element={<McpPermissions />} />
+              <Route path="/code-search" element={<CodeSearch />} />
+              <Route path="/eval" element={<EvalDashboard />} />
+              <Route path="/skills" element={<Skills lang={lang} />} />
+              <Route path="/tasks" element={<Tasks />} />
+            </Routes>
+          </Suspense>
+        </main>
+      </div>
     </div>
   );
 }
@@ -363,18 +215,6 @@ function App() {
     }
   };
 
-  const [isCollapsed, setIsCollapsed] = useState(() => {
-    return localStorage.getItem('orca_sidebar_collapsed') === 'true';
-  });
-
-  const toggleCollapse = () => {
-    setIsCollapsed(prev => {
-      const next = !prev;
-      localStorage.setItem('orca_sidebar_collapsed', String(next));
-      return next;
-    });
-  };
-
   useEffect(() => {
     if (isDark) {
       document.documentElement.classList.add('dark');
@@ -401,13 +241,11 @@ function App() {
 
   return (
     <ErrorBoundary><HashRouter>
-      <AppContent 
+      <AppContent
         isDark={isDark}
         toggleTheme={() => setIsDark(!isDark)}
         lang={lang}
         setLang={setLang}
-        isCollapsed={isCollapsed}
-        toggleCollapse={toggleCollapse}
         accent={accent}
         setAccent={setAccent}
         theme={theme}

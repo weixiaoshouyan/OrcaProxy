@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // src/agent/loop.ts
 // Core agent execution loop, tool dispatch, and stream helpers
 // Optimized for better streaming, error handling, and progress tracking
@@ -25,9 +25,46 @@ import { ensureToolPairing, dropOrphanedToolResults } from "./compression";
 import { TOOL_TIMEOUT_MS } from "../utils/helpers";
 import { getCachedToolResult, setCachedToolResult, CACHEABLE_TOOLS, invalidateCache } from "../services/tool-cache";
 import { logAudit } from "../services/audit";
-import type { ChatMessage, ToolDefinition, ToolCall, StreamChunk, ResolvedModel } from "./types";
+import type { ChatMessage, ToolCall, StreamChunk, ResolvedModel } from "./types";
 import type { Response } from "express";
 import { createAgentEvent, formatAgentEvent, type AgentEventType } from "./events";
+
+/**
+ * Build a compact human label for a tool call (Cursor-style activity rows),
+ * e.g. write_workspace_file → "src/App.tsx", run_terminal_command → "npm test".
+ */
+export function toolActivityLabel(toolName: string, argsText: string): string {
+  let args: Record<string, unknown> = {};
+  try { args = JSON.parse(argsText || "{}") as Record<string, unknown>; } catch { return ""; }
+  const str = (k: string) => (typeof args[k] === "string" ? String(args[k]) : "");
+  switch (toolName) {
+    case "write_workspace_file":
+    case "edit_workspace_file":
+    case "multi_edit":
+    case "move_file":
+    case "read_workspace_file":
+      return str("relativeFilePath") || str("filePath") || str("path");
+    case "list_directory":
+      return str("relativeDirPath") || ".";
+    case "glob_files":
+      return str("pattern");
+    case "search_grep":
+    case "search_code":
+    case "code_search":
+      return str("pattern") || str("query");
+    case "run_terminal_command":
+    case "bash": {
+      const cmd = str("command");
+      return cmd.length > 60 ? `${cmd.slice(0, 60)}…` : cmd;
+    }
+    case "complete_step":
+      return str("step");
+    case "update_goal":
+      return str("status");
+    default:
+      return "";
+  }
+}
 
 // ---- Agent event broadcasting (real-time SSE progress) ----
 
@@ -35,7 +72,7 @@ function broadcast(type: AgentEventType, taskId: string, data: Record<string, un
   try {
     const fn = (global as any).__orca_broadcastAgentEvent;
     if (typeof fn === "function") fn(formatAgentEvent(createAgentEvent(type, taskId, data)));
-  } catch (e) { /* ignore */ }
+  } catch { /* ignore */ }
 }
 
 // ---- Tool category helpers ----
@@ -132,7 +169,9 @@ export function mkChunk(parsed: StreamChunk | null, model: string, content: stri
 
 export async function fetchWithRetry(url: string, options: RequestInit & { timeoutMs?: number }, retries = 3, delay = 2000) {
   const timeoutMs = options?.timeoutMs ?? 600000;
-  const { timeoutMs: _om, ...fetchOptions } = options;
+  const fetchOptions: RequestInit = { ...options };
+  // timeoutMs is transport-level, not part of the upstream request body/headers.
+  delete (fetchOptions as { timeoutMs?: number }).timeoutMs;
   for (let i = 0; i < retries; i++) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -200,7 +239,7 @@ export interface ToolExecutionResult {
 
 /**
  * Host-handled Reasonix-style meta tools: todo_write and complete_step.
- * These never reach the generic tool executor 鈥?the host validates state,
+ * These never reach the generic tool executor —the host validates state,
  * updates taskState.todos, emits synthetic stream text and advances the list.
  */
 function handleTodoMetaTool(
@@ -229,8 +268,9 @@ function handleTodoMetaTool(
     saveTaskState(taskState);
     const receipt = todoReceipt(normalized);
     // Synthetic one-line stream update (Reasonix-style: progress lives in the
-    // todo state, not in model text).
-    writeDelta(`\n> 馃搵 ${renderTodoLine(normalized)}\n`);
+    // todo state, not in model text). renderTodoLine already emits the "> 📋"
+    // prefix — do not wrap it again or the line renders as "> 📋 > 📋 ...".
+    writeDelta(`\n${renderTodoLine(normalized)}\n`);
     broadcast("task_plan", taskState.taskId, { todos: normalized, phase: taskState.phase });
     return receipt;
   }
@@ -240,7 +280,7 @@ function handleTodoMetaTool(
       return "[Blocked] complete_step is only available in Build mode (plan mode is read-only).";
     }
     if (!Array.isArray(taskState.todos) || taskState.todos.length === 0) {
-      return "Error: no todo list established 鈥?call todo_write first.";
+      return "Error: no todo list established — call todo_write first.";
     }
     const step = String(args?.step ?? "");
     const idx = matchTodoStep(taskState.todos, step, typeof args?.step_index === "number" ? args.step_index : undefined);
@@ -250,7 +290,7 @@ function handleTodoMetaTool(
     if (item.level === 0) {
       const subs = taskState.todos.slice(idx + 1).filter((t) => (t.level ?? 1) === 1);
       if (subs.some((s) => s.status !== "completed")) {
-        return `Error: phase "${item.content}" has unfinished sub-steps 鈥?sign off its sub-steps first.`;
+        return `Error: phase "${item.content}" has unfinished sub-steps —sign off its sub-steps first.`;
       }
     }
 
@@ -298,18 +338,18 @@ function handleTodoMetaTool(
       if (kind === "verification") {
         const cmd = String(ev?.command ?? "").trim();
         if (cmd && successCommands.has(cmd)) { hostVerified++; continue; }
-        return `Error: verification evidence rejected 鈥?command "${cmd || "<missing>"}" did not run successfully in this session. Run it first, then sign off.`;
+        return `Error: verification evidence rejected —command "${cmd || "<missing>"}" did not run successfully in this session. Run it first, then sign off.`;
       }
       if (kind === "diff" || kind === "files") {
         const paths: string[] = Array.isArray(ev?.paths) ? ev.paths.map((p: any) => String(p)) : [];
         if (paths.length > 0 && paths.every((p) => writtenPaths.has(p))) { hostVerified++; continue; }
-        return `Error: ${kind} evidence rejected 鈥?paths were not written successfully in this session: ${paths.join(", ") || "<none>"}`;
+        return `Error: ${kind} evidence rejected —paths were not written successfully in this session: ${paths.join(", ") || "<none>"}`;
       }
       if (kind === "manual") { manualCount++; continue; }
       if (kind === "review") { manualCount++; continue; } // no in-process review system: counted, not host-verified
     }
     if (hostVerified === 0) {
-      return "Error: no host-verifiable evidence 鈥?include a verification command that ran successfully, or paths that were written this session.";
+      return "Error: no host-verifiable evidence —include a verification command that ran successfully, or paths that were written this session.";
     }
 
     // Sign off + advance
@@ -321,9 +361,9 @@ function handleTodoMetaTool(
       `Step "${item.content}" signed off with ${evidence.length} evidence item(s) [${kinds.join(", ")}]. ` +
       `Host evidence: host-verified ${hostVerified}, manual/unverified ${manualCount}. ` +
       `Todos: ${c.completed}/${c.total} completed. The host advanced the task list; continue with the next step.`;
-    writeDelta(`\n鉁?**${item.content}** 鈥?${resultText.slice(0, 300)}\n`);
+    writeDelta(`\n✅**${item.content}** —${resultText.slice(0, 300)}\n`);
     if (c.inProgress > 0) {
-      writeDelta(`\n> 馃搵 ${renderTodoLine(taskState.todos)}\n`);
+      writeDelta(`\n${renderTodoLine(taskState.todos)}\n`);
     }
     broadcast("task_plan", taskState.taskId, { todos: taskState.todos, phase: taskState.phase });
     return receipt;
@@ -381,17 +421,22 @@ export async function executeToolsInParallel(
     const runningStep = taskState ? nextPendingStep(taskState) : undefined;
     if (taskState && runningStep) updateStepStatus(taskState, runningStep.id, "running");
 
-    const names = batch.map((tc) => tc.name).join(", ");
     const batchStartTime = Date.now();
-    writeDelta(`\n\n> 馃敡 **Agent Executing ${batch.length > 1 ? `${batch.length} tools in parallel` : "Tool"}:** \`${names}\`...\n`);
-    if (taskState) {
-      for (const tc of batch) {
+    // Per-tool activity announcement (Cursor-style compact rows): one line per
+    // tool with a human label (file path / command), immediately followed by
+    // the tool's output code block in the result loop below.
+    for (const tc of batch) {
+      const label = toolActivityLabel(tc.name, tc.arguments);
+      writeDelta(`\n\n> 🔧 **Agent Executing Tool:** \`${tc.name}\`${label ? ` — ${label}` : ""}...\n`);
+      if (taskState) {
         broadcast("tool_start", taskState.taskId, { toolName: tc.name, toolCallId: tc.id, arguments: tc.arguments });
       }
     }
 
     const toolKeepAlive = setInterval(() => {
-      if (!res.writableEnded) res.write(": keep-alive\n\n");
+      try {
+        if (!res.writableEnded && !res.destroyed) res.write(": keep-alive\n\n");
+      } catch { /* socket dead */ }
     }, 15000);
 
     let outputs: string[];
@@ -451,8 +496,18 @@ export async function executeToolsInParallel(
           let parsedArgs: Record<string, unknown> = {};
           try { parsedArgs = JSON.parse(tc.function.arguments || "{}"); } catch { /* ignore */ }
 
+          // ---- Reasonix-style todo bookkeeping (host-handled meta tools) ----
+          // Host-side state updates only (no filesystem access) — allowed in
+          // Plan mode too, matching the tool injection in tools.ts. complete_step
+          // enforces the read-only restriction internally.
+          if (toolName === "todo_write" || toolName === "complete_step" || toolName === "update_goal") {
+            const metaResult = handleTodoMetaTool(toolName, parsedArgs, workspacePath, readOnlyMode, records, taskState, writeDelta);
+            outputs.push(metaResult);
+            continue;
+          }
+
           // Plan / read-only mode gate: only read-only tools may execute.
-          // This is the enforcement point 鈥?even if a tool sneaks into the
+          // This is the enforcement point —even if a tool sneaks into the
           // injected tool list, execution is refused here.
           if (readOnlyMode && !isReadOnlyTool(toolName)) {
             log("warn", `[Gate] Tool "${toolName}" blocked in read-only mode`);
@@ -463,13 +518,6 @@ export async function executeToolsInParallel(
           if (CACHEABLE_TOOLS.has(toolName)) {
             const cached = getCachedToolResult(toolName, parsedArgs, workspacePath);
             if (cached !== null) { outputs.push(`[Cached] ${cached}`); continue; }
-          }
-
-          // ---- Reasonix-style todo bookkeeping (host-handled meta tools) ----
-          if (toolName === "todo_write" || toolName === "complete_step" || toolName === "update_goal") {
-            const metaResult = handleTodoMetaTool(toolName, parsedArgs, workspacePath, readOnlyMode, records, taskState, writeDelta);
-            outputs.push(metaResult);
-            continue;
           }
 
           let result: string;
@@ -577,15 +625,22 @@ export async function executeToolsInParallel(
   if (taskState && records.length > 0) {
     const verdict = evaluateToolGuards(taskState, records);
     if (verdict.hardStop) {
-      writeDelta(`\n\n> 馃洃 **${verdict.note}**\n`);
+      writeDelta(`\n\n> 🛑 **${verdict.note}**\n`);
       log("error", `[Guard] Hard stop: ${verdict.note}`);
       if (taskState) {
         taskState.phase = "replan";
         taskState.metadata.hardStop = verdict.note;
         saveTaskState(taskState);
       }
+      // End the response with a proper terminal sequence so the client never
+      // sees a silent EOF while a <think> block or tool row is still "running".
       if (!res.writableEnded) {
-        try { res.end(); } catch { /* already closed */ }
+        try {
+          const stopChunk = mkChunk(null, resolved?.model || "unknown", "", "stop");
+          res.write("data: " + JSON.stringify(stopChunk) + "\n\n");
+          res.write("data: [DONE]\n\n");
+          res.end();
+        } catch { try { res.destroy(); } catch { /* already closed */ } }
       }
       return { records, aborted: true };
     }
@@ -595,7 +650,7 @@ export async function executeToolsInParallel(
         const content = typeof lastToolMsg.content === "string" ? lastToolMsg.content : "";
         lastToolMsg.content = `${content}\n\n[${verdict.note}]`;
       }
-      writeDelta(`\n\n> 鈿狅笍 **${verdict.note}**\n`);
+      writeDelta(`\n\n> ⚠️ **${verdict.note}**\n`);
     }
   }
 
@@ -610,7 +665,7 @@ export async function executeToolsInParallel(
     };
     saveTaskState(taskState);
     broadcast("task_error", taskState.taskId, { ask: taskState.metadata.pendingAsk });
-    writeDelta(`\n\n> 鉂?**${taskState.metadata.pendingAsk.question}**\n${(taskState.metadata.pendingAsk.options as string[] || []).map((o: string, i: number) => `${i + 1}. ${o}`).join("\n")}\n\n*${"Waiting for your answer 鈥?the task will resume when you reply."}*\n`);
+    writeDelta(`\n\n> ❓**${taskState.metadata.pendingAsk.question}**\n${(taskState.metadata.pendingAsk.options as string[] || []).map((o: string, i: number) => `${i + 1}. ${o}`).join("\n")}\n\n*${"Waiting for your answer —the task will resume when you reply."}*\n`);
     return { records, aborted: true };
   }
 
@@ -640,24 +695,5 @@ export function truncateMessagesIfNeeded(messages: ChatMessage[]): void {
     messages.push(...recentMessages);
     log("info", `[Chat] Truncated to ${messages.length} messages (paired: ${recentMessages.filter(m => m.tool_call_id).length} tool results)`);
   }
-}
-
-// ---- Core Agent Execution Loop ----
-
-interface AgentRequestBody {
-  model?: string;
-  messages?: ChatMessage[];
-  tools?: ToolDefinition[];
-  stream?: boolean;
-  temperature?: number;
-  max_tokens?: number;
-  top_p?: number;
-  tool_choice?: unknown;
-  activeSkillId?: string;
-  useAgent?: boolean;
-  workspacePath?: string;
-  resumeTaskId?: string;
-  taskId?: string;
-  [key: string]: unknown;
 }
 

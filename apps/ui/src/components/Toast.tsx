@@ -1,9 +1,15 @@
 // frontend/src/components/Toast.tsx
 // 全局 Toast 通知组件 - 替代 alert() 提供更现代的提示体验
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, AlertCircle, Info, X, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, X, AlertTriangle, RefreshCw } from 'lucide-react';
+import { retryRequest } from '../api';
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
+
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
 
 interface ToastItem {
   id: number;
@@ -11,10 +17,11 @@ interface ToastItem {
   message: string;
   description?: string;
   duration?: number;
+  action?: ToastAction;
 }
 
 interface ToastContextValue {
-  toast: (type: ToastType, message: string, description?: string, duration?: number) => void;
+  toast: (type: ToastType, message: string, description?: string, duration?: number, action?: ToastAction) => void;
   success: (message: string, description?: string) => void;
   error: (message: string, description?: string) => void;
   info: (message: string, description?: string) => void;
@@ -60,21 +67,38 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     setItems(prev => prev.filter(it => it.id !== id));
   }, []);
 
-  const toast = useCallback<ToastContextValue['toast']>((type, message, description, duration = 4000) => {
+  const toast = useCallback<ToastContextValue['toast']>((type, message, description, duration = 4000, action) => {
     const id = ++counterRef.current;
-    setItems(prev => [...prev, { id, type, message, description, duration }]);
+    setItems(prev => [...prev, { id, type, message, description, duration, action }]);
     if (duration > 0) {
       setTimeout(() => remove(id), duration);
     }
   }, [remove]);
 
-  // Listen for global API errors and show as toast
+  // Listen for global API errors and show as toast — with a one-click retry
+  // for transient failures (P2-14). The original axios config rides along in
+  // the event detail, so retrying replays the exact same request.
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ message: string; code: string }>).detail;
-      if (detail) {
-        toast('error', detail.message, detail.code);
-      }
+      const detail = (e as CustomEvent<{
+        message: string;
+        code: string;
+        status: number;
+        retryable?: boolean;
+        config?: Record<string, unknown> | null;
+      }>).detail;
+      if (!detail) return;
+      const action: ToastAction | undefined = detail.retryable && detail.config
+        ? {
+            label: detail.code === 'RATE_LIMIT' ? '稍后重试' : '重试',
+            onClick: () => {
+              void retryRequest(detail.config!).catch((err) => {
+                console.error('[Retry failed]', err);
+              });
+            },
+          }
+        : undefined;
+      toast('error', detail.message, detail.code, 6000, action);
     };
     window.addEventListener('orca:api-error', handler as EventListener);
     return () => window.removeEventListener('orca:api-error', handler as EventListener);
@@ -105,6 +129,15 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 <div className="text-sm font-semibold text-[var(--color-text-primary)] leading-tight">{item.message}</div>
                 {item.description && (
                   <div className="text-xs mt-0.5 text-[var(--color-text-secondary)] leading-relaxed">{item.description}</div>
+                )}
+                {item.action && (
+                  <button
+                    onClick={() => { item.action!.onClick(); remove(item.id); }}
+                    className="mt-2 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-[var(--color-border-base)] bg-[var(--color-bg-hover)] text-[11px] font-bold text-[var(--color-text-primary)] hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/40 transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    {item.action.label}
+                  </button>
                 )}
               </div>
               <button

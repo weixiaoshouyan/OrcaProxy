@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Zap, Key, Activity, Sparkles, BarChart2, List, Calendar, ChevronDown, FileSpreadsheet } from 'lucide-react';
+import { Zap, Key, Activity, Sparkles, BarChart2, List, Calendar, ChevronDown, FileSpreadsheet, RefreshCw } from 'lucide-react';
 import { api } from '../api';
 import { translate as t } from '../i18n';
 import type { Language } from '../i18n';
@@ -46,7 +46,10 @@ export default function Dashboard({ lang }: DashboardProps) {
   const [viewType, setViewType] = useState<'chart' | 'list'>('chart');
   const [timeUnit, setTimeUnit] = useState<'year' | 'month'>('month');
   const [displayMode, setDisplayMode] = useState<'total' | 'single'>('total');
-  const [selectedMonth, setSelectedMonth] = useState('2026-06');
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
   const [monthMenuOpen, setMonthMenuOpen] = useState(false);
   const [themeChanged, setThemeChanged] = useState(0);
   const [activeModelIds, setActiveModelIds] = useState<Set<string>>(new Set());
@@ -55,6 +58,8 @@ export default function Dashboard({ lang }: DashboardProps) {
   const [pageSize, setPageSize] = useState(10);
   const [sortField, setSortField] = useState<string>('date');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  // 手动刷新：点击刷新按钮时自增，触发下方轮询 effect 重新拉取数据
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const chartRef = useRef<HTMLDivElement>(null);
   const horizontalChartRef = useRef<HTMLDivElement>(null);
@@ -157,7 +162,13 @@ export default function Dashboard({ lang }: DashboardProps) {
           const data = results[2].value.data;
           const activeIds = new Set<string>();
           data.forEach((p: { id: string; configured: boolean; models: { id: string }[] }) => {
-            if (p.configured) p.models.forEach(m => activeIds.add(m.id));
+            if (p.configured) p.models.forEach(m => {
+              // Billing keys are provider-qualified since qualifyModel
+              // ("opencode/deepseek-v4-flash"); match both the qualified key
+              // and the legacy bare id so rows are never silently dropped.
+              activeIds.add(m.id);
+              activeIds.add(m.id.includes('/') ? m.id : `${p.id}/${m.id}`);
+            });
           });
           setActiveModelIds(activeIds);
         }
@@ -182,7 +193,7 @@ export default function Dashboard({ lang }: DashboardProps) {
       mounted = false;
       clearTimeout(timeoutId);
     };
-  }, []);
+  }, [refreshTick]);
 
   // Listen to theme changes to redraw ECharts
   useEffect(() => {
@@ -211,7 +222,6 @@ export default function Dashboard({ lang }: DashboardProps) {
     
     if (timeUnit === 'year') {
       periods.add(String(today.getFullYear()));
-      periods.add('2026'); // 默认必须有的年份
       Object.keys(billingData).forEach(dateStr => {
         const y = dateStr.slice(0, 4);
         if (y.match(/^\d{4}$/)) {
@@ -221,7 +231,6 @@ export default function Dashboard({ lang }: DashboardProps) {
     } else {
       const currentMonthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
       periods.add(currentMonthStr);
-      periods.add('2026-06'); // 默认必须有的月份
       Object.keys(billingData).forEach(dateStr => {
         const m = dateStr.slice(0, 7);
         if (m.match(/^\d{4}-\d{2}$/)) {
@@ -731,6 +740,16 @@ export default function Dashboard({ lang }: DashboardProps) {
           <h2 className="text-3xl font-bold tracking-tight text-[var(--color-text-primary)]">{t('dashboard.title', lang)}</h2>
           <p className="text-[14px] text-[var(--color-text-secondary)] mt-1.5">{t('dashboard.desc', lang)}</p>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setRefreshTick(t => t + 1)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--color-border-base)] bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-xs font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-all cursor-pointer"
+            title={lang === 'en' ? 'Refresh token stats' : '刷新 Token 统计'}
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            {lang === 'en' ? 'Refresh' : '刷新'}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-8 select-none">
@@ -771,7 +790,7 @@ export default function Dashboard({ lang }: DashboardProps) {
           .sort(([, a], [, b]) => (b as number) - (a as number));
         return (
           <div className="bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-2xl p-5 mb-6 select-none">
-            <h3 className="text-sm font-bold text-[var(--color-text-primary)] mb-3">模型用量分布</h3>
+            <h3 className="text-sm font-bold text-[var(--color-text-primary)] mb-3">{lang === 'en' ? 'Model Token Distribution' : '模型用量分布'}</h3>
             <div className="space-y-2">
               {sorted.map(([model, tokens], idx) => {
                 const pct = Math.round(((tokens as number) / grandTotal) * 100);
@@ -880,10 +899,10 @@ export default function Dashboard({ lang }: DashboardProps) {
               <button 
                 onClick={handleExport}
                 className="flex items-center gap-1 bg-white dark:bg-slate-900 border border-[var(--color-border-base)] px-3 py-2 rounded-lg text-xs font-bold text-[var(--color-text-primary)] shadow-sm hover:bg-[var(--color-bg-hover)] transition-all cursor-pointer"
-                title="导出数据为 CSV"
+                title={lang === 'en' ? 'Export data as CSV' : '导出数据为 CSV'}
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                <span>导出</span>
+                <span>{lang === 'en' ? 'Export' : '导出'}</span>
               </button>
 
             </div>

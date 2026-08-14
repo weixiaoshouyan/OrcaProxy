@@ -129,7 +129,7 @@ export default function Logs({ lang }: LogsProps) {
   };
 
   return (
-    <div className="animate-in fade-in duration-500 max-w-6xl mx-auto h-[calc(100vh-64px)] flex flex-col gap-6">
+    <div className="animate-in fade-in duration-500 max-w-6xl mx-auto min-h-[calc(100vh-64px)] h-full flex flex-col gap-6">
       
       {/* Top dashboard header with details */}
       <div className="flex items-end justify-between shrink-0">
@@ -174,7 +174,7 @@ export default function Logs({ lang }: LogsProps) {
             filterLevel === 'ALL' ? 'bg-[var(--color-bg-hover)] border-[var(--color-primary)]/40 shadow-sm' : 'bg-[var(--color-bg-card)] border-[var(--color-border-base)]'
           }`}
         >
-          <div className="text-xs font-bold text-[var(--color-text-muted)] uppercase">所有日志 (All)</div>
+          <div className="text-xs font-bold text-[var(--color-text-muted)] uppercase">{lang === 'en' ? 'All Logs' : '所有日志'}</div>
           <div className="text-2xl font-extrabold text-[var(--color-text-primary)] mt-1.5">{logs.length}</div>
         </div>
         <div 
@@ -255,7 +255,7 @@ export default function Logs({ lang }: LogsProps) {
           {filteredLogs.length === 0 ? (
             <div className="text-[var(--color-text-muted)] italic flex h-full items-center justify-center flex-col gap-2 select-none">
               <TerminalSquare className="w-8 h-8 text-[var(--color-border-base)] animate-pulse" />
-              <span>暂无匹配的日志记录...</span>
+              <span>{lang === 'en' ? 'No matching log entries...' : '暂无匹配的日志记录...'}</span>
             </div>
           ) : (
             <div

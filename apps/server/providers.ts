@@ -167,6 +167,7 @@ export const BUILTIN_PROVIDERS: Provider[] = [
 ];
 import path from "path";
 import fs from "fs";
+import { resolveBaseDir, migrateLegacyDataFile } from "./utils/base-dir";
 
 export interface Profile {
   id: string;
@@ -215,9 +216,12 @@ export interface RuntimeConfig {
 const _isPkg = !!(process as any).pkg;
 const _isSEA = typeof (process as any).isSea !== "undefined" && (process as any).isSea;
 const _isElectron = !!process.env.ORCA_BASE_DIR;
-const _devDir = path.join(__dirname, "..");
-const _portableDir = __dirname;
-const BASE_DIR = _isElectron ? process.env.ORCA_BASE_DIR! : ((_isPkg || _isSEA) ? path.dirname(process.execPath) : (fs.existsSync(path.join(_portableDir, "public")) ? _portableDir : _devDir));
+// Unified BASE_DIR: Electron → userData; pkg/SEA → executable dir;
+// otherwise walk up to the project root (package.json). All runtime data now
+// lives under <BASE_DIR>/data (was split across apps/data in dev mode).
+const BASE_DIR = resolveBaseDir(__dirname, 2);
+// One-time migration: older dev builds wrote config to apps/data/config.json.
+migrateLegacyDataFile("config.json");
 const CONFIG_PATH = path.join(BASE_DIR, "data", "config.json");
 
 function defaultConfig(): RuntimeConfig {
@@ -238,7 +242,7 @@ function defaultConfig(): RuntimeConfig {
     defaultMaxTokens: 4096,
     autoSyncInterval: "never",
     cacheEnabled: true,
-    healthCheckEnabled: false,
+    healthCheckEnabled: true,
     autoVerify: true,
     fallbackProviderIds: [],
     appPaths: {},
@@ -288,7 +292,48 @@ export function loadConfig(): RuntimeConfig {
   try {
     const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    _config = { ...defaultConfig(), ...validateConfig(parsed) };
+    const validated = validateConfig(parsed);
+    // Deep-merge model pricing: a user file that has no pricing entries (e.g.
+    // `"modelPricing": {}` from an older UI) must not wipe out the built-in
+    // rate card, or the pricing table would silently lose the default models.
+    // User-entered entries still win over the defaults.
+    validated.modelPricing = {
+      ...defaultConfig().modelPricing,
+      ...(validated.modelPricing || {}),
+    };
+    // One-time migration: drop discovered-model entries whose provider no
+    // longer exists (custom provider deleted but stale scan results left
+    // behind, e.g. a leftover "longcat-2.0"), and stale scan results for a
+    // builtin provider whose key was removed. Both are leftovers from the
+    // "discover models" flow in the UI, which never cleans up after itself.
+    let discoveredChanged = false;
+    if (validated.discoveredModels) {
+      const knownIds = new Set([
+        ...BUILTIN_PROVIDERS.map((p) => p.id),
+        ...(validated.customProviders || []).map((p: Provider) => p.id),
+      ]);
+      for (const key of Object.keys(validated.discoveredModels)) {
+        if (!knownIds.has(key)) {
+          delete validated.discoveredModels[key];
+          discoveredChanged = true;
+        } else {
+          const builtin = BUILTIN_PROVIDERS.find((b) => b.id === key);
+          if (builtin) {
+            const hasKey = !!(
+              (validated.providerKeys as Record<string, string> | undefined)?.[key] ||
+              builtin.apiKey ||
+              (builtin.apiKeyEnv ? process.env[builtin.apiKeyEnv] || "" : "")
+            );
+            if (!hasKey) {
+              delete validated.discoveredModels[key];
+              discoveredChanged = true;
+            }
+          }
+        }
+      }
+    }
+    _config = { ...defaultConfig(), ...validated };
+    if (discoveredChanged) saveConfig(_config);
   } catch {
     _config = defaultConfig();
     saveConfig(_config);
@@ -310,7 +355,17 @@ export function getAllProviders(): Provider[] {
   const cfg = loadConfig();
   const discovered = cfg.discoveredModels || {};
   return [...BUILTIN_PROVIDERS, ...cfg.customProviders].map((p) => {
-    if (discovered[p.id] && discovered[p.id].length > 0) {
+    // Only apply user-scanned model lists when the provider is actually
+    // configured. A leftover scan result for a provider whose key was
+    // removed (e.g. a deleted provider's "longcat-2.0") would otherwise
+    // replace the builtin model list and show stale models on every screen.
+    const isBuiltin = BUILTIN_PROVIDERS.some((b) => b.id === p.id);
+    const hasKey = !!(
+      cfg.providerKeys?.[p.id] ||
+      (p as Provider).apiKey ||
+      (p.apiKeyEnv ? process.env[p.apiKeyEnv] || "" : "")
+    );
+    if (discovered[p.id] && discovered[p.id].length > 0 && (!isBuiltin || hasKey)) {
       return { ...p, models: discovered[p.id] };
     }
     return p;
@@ -442,6 +497,26 @@ export function resolveModel(
       }
     } catch (e) {
       // ignore invalid regex
+    }
+  }
+
+  // Explicit "providerId/model" request (the UI stores provider-qualified ids
+  // so the same model served by different providers can be addressed
+  // unambiguously). If the provider prefix does not resolve to a configured
+  // provider with a key, fall through — a bare vendor-qualified id like
+  // siliconflow's "deepseek-ai/DeepSeek-V3" must still match by model id below.
+  const slashIdx = requested.indexOf("/");
+  if (slashIdx > 0) {
+    const provId = requested.slice(0, slashIdx);
+    const modelPart = requested.slice(slashIdx + 1);
+    const prov = getProvider(provId);
+    if (prov) {
+      const key = getApiKey(prov.id, activeProfile);
+      if (key) {
+        const isNative = prov.models.some((m) => m.id === modelPart);
+        const finalModel = isNative ? modelPart : (prov.models[0]?.id || modelPart);
+        return { provider: prov, model: finalModel, apiKey: key };
+      }
     }
   }
 

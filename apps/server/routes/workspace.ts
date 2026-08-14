@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // src/routes/workspace.ts
 // Workspace management: file listing, file reading, open file
 // ============================================================
@@ -198,5 +198,35 @@ export function registerWorkspaceRoutes(app: express.Application): void {
     } catch (e: any) {
       res.status(500).json({ error: "Internal server error" });
     }
+  });
+
+  // ---- Rerun a terminal command (TerminalPanel "rerun" action, P1-8) ----
+  // Reuses the agent's executeTerminalCommand so the same dangerous-command
+  // blacklist / output truncation rules apply. Workspace path is required to
+  // scope execution; absolute paths outside a registered workspace are refused.
+  app.post("/api/workspace/run-command", (req, res) => {
+    (async () => {
+      const { command, workspacePath } = req.body || {};
+      if (typeof command !== "string" || !command.trim()) {
+        return res.status(400).json({ error: "command is required" });
+      }
+      if (typeof workspacePath !== "string" || !workspacePath.trim()) {
+        return res.status(400).json({ error: "workspacePath is required to scope command execution" });
+      }
+      const resolved = path.resolve(workspacePath);
+      if (resolved === path.parse(resolved).root) {
+        return res.status(403).json({ error: "filesystem root is not a valid workspace" });
+      }
+      if (!fs.existsSync(resolved)) {
+        return res.status(400).json({ error: "workspace path does not exist" });
+      }
+      const { executeTerminalCommand } = await import("../services/skills");
+      const output = await executeTerminalCommand(command, resolved);
+      const blocked = output.startsWith("[BLOCKED]");
+      res.json({ ok: !blocked, output, blocked });
+    })().catch((e: any) => {
+      log("error", "[Workspace] run-command failed:", e);
+      res.status(500).json({ error: "命令执行失败", detail: String((e as Error)?.message || e) });
+    });
   });
 }

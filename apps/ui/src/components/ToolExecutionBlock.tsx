@@ -48,9 +48,11 @@ function iconForTool(toolName: string) {
   return Terminal;
 }
 
-function renderDiffContent(content: string, isRunning: boolean) {
+function renderDiffContent(content: string, isRunning: boolean, lang: Language) {
   if (!content) {
-    return <span className="text-slate-500 italic">{isRunning ? 'Establishing pipeline with agent daemon...' : 'Output was empty'}</span>;
+    return <span className="text-slate-500 italic">{isRunning
+      ? (lang === 'en' ? 'Establishing pipeline with agent daemon...' : '正在与智能体守护进程建立连接...')
+      : (lang === 'en' ? 'Output was empty' : '输出为空')}</span>;
   }
 
   const lines = content.split('\n');
@@ -161,10 +163,10 @@ export const ToolExecutionBlock = memo(function ToolExecutionBlock({ block, lang
   };
 
   return (
-    <div className={`my-3 border rounded-xl overflow-hidden transition-all duration-300 ${
-      isRunning ? 'border-yellow-300/40 dark:border-yellow-700/40 bg-yellow-50/20 dark:bg-yellow-950/10' :
-      isError ? 'border-red-300/40 dark:border-red-700/40 bg-red-50/20 dark:bg-red-950/10' :
-      'border-green-300/40 dark:border-green-700/40 bg-green-50/20 dark:bg-green-950/10 tool-block-done'
+    <div className={`my-3 border rounded-xl overflow-hidden transition-all duration-300 shadow-[var(--shadow-xs)] ${
+      isRunning ? 'border-[color-mix(in_srgb,var(--color-primary)_30%,var(--color-border-base))] bg-[color-mix(in_srgb,var(--color-primary)_5%,var(--color-bg-card))]' :
+      isError ? 'border-red-300/40 dark:border-red-700/40 bg-[var(--color-error-bg)]' :
+      'border-[var(--color-border-base)] bg-[var(--color-bg-card)] tool-block-done'
     }`}>
       <div className="flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none"
         onClick={() => setIsExpanded(!isExpanded)}
@@ -231,7 +233,7 @@ export const ToolExecutionBlock = memo(function ToolExecutionBlock({ block, lang
             <span className="text-[var(--color-text-secondary)]">{block.toolName}</span>
           </div>
           <div className="overflow-x-auto bg-[var(--color-bg-sidebar)] p-4 rounded-lg border border-[var(--color-border-base)] font-mono select-text text-[var(--color-text-primary)]">
-            {renderDiffContent(displayContent, isRunning)}
+            {renderDiffContent(displayContent, isRunning, lang)}
           </div>
           {truncated && (
             <button

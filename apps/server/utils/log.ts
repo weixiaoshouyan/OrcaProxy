@@ -73,7 +73,17 @@ export function log(level: string, ...args: unknown[]) {
       _logWriteCount = 0;
       rotateLogIfNeeded();
     }
-  } catch (e) { console.error("Failed to write to log file:", e); }
+  } catch (e) {
+    // The logs dir may have been removed at runtime (e.g. a build step ran
+    // `clean` while the server was up). Recreate it and retry once before
+    // giving up — otherwise every subsequent log call spams ENOENT.
+    try {
+      fs.mkdirSync(_logDir, { recursive: true });
+      fs.appendFileSync(_logFile, `[${ts}] [${level.toUpperCase()}] ${message}\n`, "utf-8");
+    } catch (e2) {
+      console.error("Failed to write to log file:", e2);
+    }
+  }
 }
 
 export function getLogBuffer(): LogEntry[] { return _buffer; }

@@ -89,7 +89,7 @@ function statePath(taskId: string): string {
   return path.join(tasksDir(), `${sanitizeTaskId(taskId)}.json`);
 }
 
-export function createTaskState(goal: string, workspacePath: string, maxIterations = 40): TaskState {
+export function createTaskState(goal: string, workspacePath: string, maxIterations = 60): TaskState {
   return {
     taskId: randomUUID(),
     createdAt: Date.now(),

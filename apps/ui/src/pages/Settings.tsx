@@ -1,14 +1,21 @@
 import { useState, useEffect } from 'react';
-import { Save, RefreshCw, Check, Activity, Settings as SettingsIcon, Shield, Search, Beaker, GraduationCap, Activity as ActivityIcon, Sliders, DollarSign, Cpu, AlertTriangle } from 'lucide-react';
+import { Save, RefreshCw, Check, Activity, Settings as SettingsIcon, Shield, Search, Beaker, GraduationCap, Activity as ActivityIcon, Sliders, DollarSign, Cpu, AlertTriangle, Download, Upload, FileJson } from 'lucide-react';
 import { api, getEmbeddingHealth, type EmbeddingHealthResult } from '../api';
 import { translate as t, setLanguage } from '../i18n';
 import type { Language } from '../i18n';
 import { useToast } from '../components/Toast';
+import GeneralSettingsForm from '../components/GeneralSettingsForm';
 import type { AppConfig, ProviderInfo, McpServerConfig, PricingConfig } from '../types';
 
 interface SettingsProps {
   lang: Language;
   setLang: (lang: Language) => void;
+  isDark: boolean;
+  toggleTheme: () => void;
+  accent: string;
+  setAccent: (a: string) => void;
+  theme: string;
+  setTheme: (t: string) => void;
 }
 
 type SettingsSection = 'general' | 'mcp' | 'overrides' | 'pricing' | 'embedding' | 'fallback' | 'tools';
@@ -23,7 +30,7 @@ const sectionItems: { id: SettingsSection; icon: typeof SettingsIcon; labelKey: 
   { id: 'tools', icon: Beaker, labelKey: 'settings.section.tools' },
 ];
 
-export default function Settings({ lang, setLang }: SettingsProps) {
+export default function Settings({ lang, setLang, isDark, toggleTheme, accent, setAccent, theme, setTheme }: SettingsProps) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [isSaving, setIsSaving] = useState(false);
@@ -207,6 +214,62 @@ export default function Settings({ lang, setLang }: SettingsProps) {
     setConfig({ ...config, fallbackProviderIds: list });
   };
 
+  // ---- Config backup / restore (P0-4) ----
+  const [importing, setImporting] = useState(false);
+
+  const handleExportConfig = async () => {
+    try {
+      const { data } = await api.get('/api/config/export', { responseType: 'json' });
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `orca-config-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(lang === 'en' ? 'Configuration exported' : '配置已导出', lang === 'en'
+        ? 'The backup contains plaintext API keys — store it somewhere safe.'
+        : '备份文件包含明文 API Key，请妥善保管。');
+    } catch (e) {
+      toast.error(lang === 'en' ? 'Export failed' : '导出失败', String(e));
+    }
+  };
+
+  const handleImportConfigFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const payload = parsed?.config || parsed; // accept wrapped export format
+      if (!payload || typeof payload !== 'object') {
+        toast.error(lang === 'en' ? 'Invalid backup file' : '备份文件格式无效');
+        return;
+      }
+      setImporting(true);
+      const { data } = await api.post('/api/config/import', { config: payload });
+      toast.success(data?.message || (lang === 'en' ? 'Configuration imported' : '配置导入成功'));
+      // Reload the config so the UI reflects the imported values.
+      const fresh = await api.get('/api/config');
+      setConfig(fresh.data);
+    } catch (e) {
+      toast.error(lang === 'en' ? 'Import failed' : '导入失败', String(e));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleImportConfig = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = () => {
+      const f = input.files?.[0];
+      if (f) void handleImportConfigFile(f);
+    };
+    input.click();
+  };
+
   if (!config) return <div className="p-8 text-[var(--color-text-muted)] animate-pulse">{lang === 'en' ? 'Loading configuration...' : '正在加载配置...'}</div>;
 
   const getLabel = (key: string) => {
@@ -227,61 +290,46 @@ export default function Settings({ lang, setLang }: SettingsProps) {
       case 'general':
         return (
           <div className="space-y-6">
-            <div>
-              <h3 className="text-lg font-bold mb-4">{lang === 'en' ? 'General Settings' : '通用设置'}</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <label className="block text-sm font-semibold text-[var(--color-text-primary)] mb-2">{t('settings.port', lang)}</label>
-                  <input type="number" value={config.port} onChange={e => setConfig({...config, port: parseInt(e.target.value)})} className="w-full px-4 py-2 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-xl outline-none focus:border-[var(--color-primary)] transition-colors text-sm font-medium" />
-                  <p className="text-xs text-[var(--color-text-muted)] mt-2">{t('settings.port.desc', lang)}</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-[var(--color-text-primary)] mb-2">{t('settings.lang', lang)}</label>
-                  <select value={config.language || 'zh'} onChange={e => setConfig({...config, language: e.target.value as 'zh' | 'en'})} className="w-full px-4 py-2 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-xl outline-none focus:border-[var(--color-primary)] transition-colors appearance-none text-sm font-medium">
-                    <option value="zh">{t('settings.lang.zh', lang)}</option>
-                    <option value="en">{t('settings.lang.en', lang)}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-[var(--color-text-primary)] mb-2">{t('settings.loglevel', lang)}</label>
-                  <select value={config.logLevel} onChange={e => setConfig({...config, logLevel: e.target.value})} className="w-full px-4 py-2 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-xl outline-none focus:border-[var(--color-primary)] transition-colors appearance-none text-sm font-medium">
-                    <option value="debug">{t('settings.loglevel.debug', lang)}</option>
-                    <option value="info">{t('settings.loglevel.info', lang)}</option>
-                    <option value="warn">{t('settings.loglevel.warn', lang)}</option>
-                    <option value="error">{t('settings.loglevel.error', lang)}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-[var(--color-text-primary)] mb-2">{t('settings.autoSyncInterval', lang)}</label>
-                  <select value={config.autoSyncInterval || 'never'} onChange={e => setConfig({...config, autoSyncInterval: e.target.value})} className="w-full px-4 py-2 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-xl outline-none focus:border-[var(--color-primary)] transition-colors appearance-none text-sm font-medium">
-                    <option value="never">{t('settings.autoSyncInterval.never', lang)}</option>
-                    <option value="hourly">{t('settings.autoSyncInterval.hourly', lang)}</option>
-                    <option value="daily">{t('settings.autoSyncInterval.daily', lang)}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-[var(--color-text-primary)] mb-2">{t('settings.defaultTemp', lang)}</label>
-                  <input type="number" step="0.1" min="0" max="2" value={config.defaultTemperature !== undefined ? config.defaultTemperature : 0.7} onChange={e => setConfig({...config, defaultTemperature: parseFloat(e.target.value)})} className="w-full px-4 py-2 bg-[var(--color-bg-input)] border border-[var(--color-border-base)] rounded-xl outline-none focus:border-[var(--color-primary)] transition-colors text-sm font-medium" />
-                </div>
-                <div className="flex items-center gap-3">
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" checked={config.autoStart || false} onChange={e => setConfig({...config, autoStart: e.target.checked})} />
-                    <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:bg-gray-700 peer-checked:bg-[var(--color-primary)]"></div>
-                  </label>
-                  <span className="text-sm font-semibold">{t('settings.autostart', lang)}</span>
-                </div>
-              </div>
-              <div className="mt-6 pt-4 border-t border-[var(--color-border-base)]">
-                <div className="flex items-start gap-3">
-                  <label className="relative inline-flex items-center cursor-pointer mt-0.5 shrink-0">
-                    <input type="checkbox" className="sr-only peer" checked={config.cacheEnabled !== undefined ? config.cacheEnabled : true} onChange={e => setConfig({...config, cacheEnabled: e.target.checked})} />
-                    <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:bg-gray-700 peer-checked:bg-[var(--color-primary)]"></div>
-                  </label>
-                  <div>
-                    <span className="text-sm font-bold text-[var(--color-text-primary)] block">{t('settings.cache.enable', lang)}</span>
-                    <p className="text-xs text-[var(--color-text-muted)] mt-1.5 max-w-2xl leading-relaxed">{t('settings.cache.desc', lang)}</p>
-                  </div>
-                </div>
+            <GeneralSettingsForm
+              config={config}
+              setConfig={setConfig}
+              lang={lang}
+              isDark={isDark}
+              toggleTheme={toggleTheme}
+              accent={accent}
+              setAccent={setAccent}
+              theme={theme}
+              setTheme={setTheme}
+            />
+            {/* Config backup / restore */}
+            <div className="mt-6 pt-4 border-t border-[var(--color-border-base)]">
+              <h4 className="text-sm font-bold text-[var(--color-text-primary)] mb-3 flex items-center gap-2">
+                <FileJson className="w-4 h-4 text-[var(--color-primary)]" />
+                {lang === 'en' ? 'Configuration Backup' : '配置备份与恢复'}
+              </h4>
+              <p className="text-xs text-[var(--color-text-muted)] mb-3 max-w-2xl leading-relaxed">
+                {lang === 'en'
+                  ? 'Export all providers, API keys, profiles, pricing and MCP settings to a JSON file, then import it on another machine. The exported file contains plaintext secrets — keep it safe.'
+                  : '将供应商、API Key、配置档案、定价与 MCP 设置导出为 JSON 文件，可在其他机器上导入恢复。导出文件包含明文密钥，请妥善保管。'}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => void handleExportConfig()}
+                  className="px-4 py-2 bg-[var(--color-bg-hover)] border border-[var(--color-border-base)] hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/40 text-xs font-bold text-[var(--color-text-primary)] rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {lang === 'en' ? 'Export Config' : '导出配置'}
+                </button>
+                <button
+                  onClick={handleImportConfig}
+                  disabled={importing}
+                  className="px-4 py-2 bg-[var(--color-bg-hover)] border border-[var(--color-border-base)] hover:bg-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/40 text-xs font-bold text-[var(--color-text-primary)] rounded-lg transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  {importing
+                    ? (lang === 'en' ? 'Importing...' : '导入中...')
+                    : (lang === 'en' ? 'Import Config' : '导入配置')}
+                </button>
               </div>
             </div>
           </div>
@@ -393,6 +441,26 @@ export default function Settings({ lang, setLang }: SettingsProps) {
             <div>
               <h3 className="text-lg font-bold mb-2">{t('settings.pricing', lang)}</h3>
               <p className="text-xs text-[var(--color-text-muted)] mb-4 max-w-2xl leading-relaxed">{t('settings.pricing.desc', lang)}</p>
+              {/* P0-5: warn about configured models that have no pricing entry */}
+              {(() => {
+                const configuredModels = new Set<string>();
+                for (const p of providers) {
+                  if (!p.configured) continue;
+                  for (const m of p.models || []) configuredModels.add(m.id);
+                }
+                const unpriced = [...configuredModels].filter(id => !(config.modelPricing || {})[id]);
+                if (unpriced.length === 0) return null;
+                return (
+                  <div className="flex items-start gap-2.5 p-3 mb-4 rounded-xl border border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-300">
+                    <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                    <div className="text-xs leading-relaxed">
+                      <span className="font-bold">{lang === 'en' ? `${unpriced.length} configured model(s) have no pricing` : `${unpriced.length} 个已配置模型未设置定价`}</span>
+                      <span className="opacity-80"> — {lang === 'en' ? 'billing estimates for these will be 0. Add prices below or on the Dashboard.' : '这些模型的费用统计将显示为 0，请在下方补充价格。'}</span>
+                      <div className="mt-1 font-mono text-[10px] opacity-70 max-h-16 overflow-y-auto">{unpriced.slice(0, 20).join(' · ')}{unpriced.length > 20 ? ` … +${unpriced.length - 20}` : ''}</div>
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="border border-[var(--color-border-base)]/50 rounded-xl overflow-hidden mb-4">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-[var(--color-bg-base)] text-[var(--color-text-muted)] font-bold border-b border-[var(--color-border-base)]">
@@ -480,6 +548,28 @@ export default function Settings({ lang, setLang }: SettingsProps) {
             <div>
               <h3 className="text-lg font-bold mb-2">{t('settings.fallback', lang)}</h3>
               <p className="text-xs text-[var(--color-text-muted)] mb-4 max-w-2xl leading-relaxed">{t('settings.fallback.desc', lang)}</p>
+              {/* P1-6: health-check toggle + explanation */}
+              <div className="flex items-start gap-3 p-4 mb-4 rounded-xl border border-[var(--color-border-base)] bg-[var(--color-bg-base)]/40">
+                <label className="relative inline-flex items-center cursor-pointer mt-0.5 shrink-0">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={config.healthCheckEnabled !== false}
+                    onChange={e => setConfig({ ...config, healthCheckEnabled: e.target.checked })}
+                  />
+                  <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:bg-gray-700 peer-checked:bg-[var(--color-primary)]"></div>
+                </label>
+                <div>
+                  <span className="text-sm font-bold text-[var(--color-text-primary)] block">
+                    {lang === 'en' ? 'Provider health checks (auto failover)' : '供应商健康检查（自动故障转移）'}
+                  </span>
+                  <p className="text-xs text-[var(--color-text-muted)] mt-1 leading-relaxed">
+                    {lang === 'en'
+                      ? 'When enabled, Orca probes the active provider every 30s and automatically routes to a fallback provider below if it is unreachable. Disabling is not recommended.'
+                      : '开启后，Orca 每 30 秒探测主供应商，若不可达则自动切换到下方勾选的备用供应商。建议保持开启。'}
+                  </p>
+                </div>
+              </div>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                 {providers.map(p => {
                   const isChecked = (config.fallbackProviderIds || []).includes(p.id);
@@ -568,20 +658,20 @@ export default function Settings({ lang, setLang }: SettingsProps) {
             <button
               key={item.id}
               onClick={() => setActiveSection(item.id)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
+              className={`orca-conv-item ${activeSection === item.id ? 'orca-conv-item-active' : ''} w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-medium transition-all cursor-pointer ${
                 activeSection === item.id
-                  ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)] font-semibold'
-                  : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'
+                  ? 'bg-[var(--color-bg-hover)] text-[var(--color-primary)] font-semibold shadow-[var(--shadow-xs)]'
+                  : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]/60 hover:text-[var(--color-text-primary)]'
               }`}
             >
-              <item.icon className="w-4 h-4 shrink-0" />
+              <item.icon className={`w-4 h-4 shrink-0 ${activeSection === item.id ? 'text-[var(--color-primary)]' : ''}`} />
               <span>{getLabel(item.labelKey)}</span>
             </button>
           ))}
         </div>
 
         {/* Right Content */}
-        <div className="flex-1 min-w-0 overflow-y-auto bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-2xl p-6">
+        <div className="flex-1 min-w-0 overflow-y-auto bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-2xl p-6 shadow-[var(--shadow-xs)]">
           {renderSection()}
         </div>
       </div>
@@ -591,7 +681,7 @@ export default function Settings({ lang, setLang }: SettingsProps) {
         <button onClick={handleRevert} className="px-6 py-2.5 rounded-xl border border-[var(--color-border-base)] bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-sm font-bold text-[var(--color-text-secondary)] transition-colors flex items-center gap-2 cursor-pointer">
           <RefreshCw className="w-4 h-4" /> {t('settings.revert', lang)}
         </button>
-        <button onClick={handleSave} disabled={isSaving} className={`px-6 py-2.5 rounded-xl text-sm font-bold text-white transition-all flex items-center gap-2 shadow-sm cursor-pointer ${saved ? 'bg-green-600 shadow-green-600/20' : 'bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] shadow-[var(--color-primary)]/20'} disabled:opacity-50`}>
+        <button onClick={handleSave} disabled={isSaving} className={`orca-btn-primary px-6 py-2.5 rounded-xl text-sm font-bold text-white transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:shadow-none ${saved ? '!bg-green-600' : ''}`}>
           {saved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
           {saved ? t('settings.save.success', lang) : (isSaving ? t('settings.saving', lang) : t('settings.save', lang))}
         </button>

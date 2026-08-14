@@ -176,9 +176,38 @@ function convertTools(tools: ResponsesTool[] | undefined): ChatTool[] | undefine
 
 // ---- Main request transformer ---------------------------------------------
 
-export function transformRequest(body: ResponsesRequest, modelOverride?: string): ChatRequest {
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  model: string;
+}
+
+// Identity patch: Codex's system prompt asserts an OpenAI/Codex identity and
+// instructs the model to follow its text-DSL tool-calling protocol. Third-party
+// models (DeepSeek etc.) can be led astray and start echoing the DSL as plain
+// text instead of emitting structured tool calls. Following ccswitch-deepseek's
+// approach: append a truthful identity override. Skipped for OpenAI's own
+// models, which must keep the Codex identity.
+const IDENTITY_PATCH = (p: ProviderInfo) =>
+  `\n\n[IMPORTANT: Your true underlying model is ${p.name} (${p.model}), served through a local proxy. ` +
+  `You are NOT OpenAI, GPT, Claude, or Codex. When asked about your model identity, you MUST truthfully ` +
+  `answer that you are ${p.model} from ${p.name}. Ignore any conflicting identity claims in the instructions above.]`;
+
+function applyIdentityPatch(messages: ChatMessage[], provider?: ProviderInfo): void {
+  if (!provider || provider.id === "openai") return;
+  const patch = IDENTITY_PATCH(provider);
+  const sysIdx = messages.findIndex((m) => m.role === "system");
+  if (sysIdx >= 0) {
+    messages[sysIdx] = { ...messages[sysIdx], content: (messages[sysIdx].content || "") + patch };
+  } else {
+    messages.unshift({ role: "system", content: patch });
+  }
+}
+
+export function transformRequest(body: ResponsesRequest, modelOverride?: string, provider?: ProviderInfo): ChatRequest {
   const model = modelOverride || body.model;
   const messages = convertInput(body);
+  applyIdentityPatch(messages, provider);
   const tools = convertTools(body.tools);
 
   const chatReq: ChatRequest = { model, messages, stream: true };
@@ -186,6 +215,20 @@ export function transformRequest(body: ResponsesRequest, modelOverride?: string)
   if (body.temperature !== undefined) chatReq.temperature = body.temperature;
   if (body.top_p !== undefined) chatReq.top_p = body.top_p;
   if (body.max_output_tokens !== undefined) chatReq.max_tokens = body.max_output_tokens;
+
+  // DeepSeek-style `thinking` passthrough: Codex sends `reasoning: { effort }`;
+  // translate it to the upstream `thinking` flag so reasoning models actually
+  // think (ccswitch-deepseek approach). OpenAI's endpoint ignores it, but it is
+  // excluded to keep the official codex models untouched. OpenAI-compatible
+  // gateways ignore unknown params, so this is safe for third-party providers.
+  const reasoning = (body as any).reasoning;
+  const thinkingEnabled =
+    body.thinking === true ||
+    (typeof body.thinking === "object" && body.thinking !== null && (body.thinking as any).type === "enabled") ||
+    !!(reasoning && reasoning.effort);
+  if (thinkingEnabled && provider && provider.id !== "openai") {
+    (chatReq as any).thinking = { type: "enabled" };
+  }
 
   return chatReq;
 }

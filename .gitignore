@@ -11,6 +11,12 @@ data/code-indexes/
 data/eval/
 release/
 release-build/
+release-new/
+release-new2/
+release-new3/
+.mimosa/
+.zcode/
+apps/data/
 __pycache__/
 *.py[cod]
 .DS_Store

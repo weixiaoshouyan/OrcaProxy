@@ -42,6 +42,8 @@ export function answerPendingAsk(taskId: string, answer: string): PendingAsk | u
   if (!ask) return undefined;
   ask.status = "answered";
   ask.answer = answer;
+  // Clean up: remove from store to prevent memory leak
+  pendingAskStore.delete(ask.toolCallId);
   return ask;
 }
 
@@ -95,7 +97,7 @@ export async function handleAgentToolCall(tc: any, workspacePath: string, cpCont
     if (!question) return "Error: question parameter is required.";
     const options = Array.isArray(args.options) ? args.options.filter((o: any) => typeof o === "string").slice(0, 8) : [];
     const pendingAsk = {
-      taskId: (args.taskId as string) || "",
+      taskId: cpContext?.conversationId || "",
       toolCallId: tc.id,
       question,
       options,
@@ -205,7 +207,7 @@ export async function handleAgentToolCall(tc: any, workspacePath: string, cpCont
     try {
       const walk = (dir: string, depth = 0): string[] => {
         if (depth > 3) return [];
-        let results: string[] = [];
+        const results: string[] = [];
         const list = fs.readdirSync(dir, { withFileTypes: true });
         for (const item of list) {
           const resPath = path.join(dir, item.name);

@@ -1,9 +1,9 @@
-﻿/**
+/**
  * Shared TypeScript type definitions for the Orca frontend.
  * Replaces `any` usage across pages and components.
  */
 
-// 鈹€鈹€ Stats 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Stats ──────────────────────────────────────────────────────────────
 
 export interface RequestStats {
   totalRequests: number;
@@ -13,7 +13,7 @@ export interface RequestStats {
   totalCost: number;
 }
 
-// 鈹€鈹€ Billing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Billing ────────────────────────────────────────────────────────────
 
 export interface BillingDayEntry {
   total: number;
@@ -21,7 +21,7 @@ export interface BillingDayEntry {
   uncached: number;
 }
 
-/** keyed by date string "YYYY-MM-DD", value is model 鈫?entry */
+/** keyed by date string "YYYY-MM-DD", value is model →entry */
 export type BillingData = Record<string, Record<string, number | BillingDayEntry>>;
 
 export interface BillingTableRow {
@@ -32,7 +32,7 @@ export interface BillingTableRow {
   uncached: number;
 }
 
-// 鈹€鈹€ Config 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Config ─────────────────────────────────────────────────────────────
 
 export interface AppConfig {
   activeProviderId?: string;
@@ -46,6 +46,7 @@ export interface AppConfig {
   projectDir?: string;
   autoStart?: boolean;
   cacheEnabled?: boolean;
+  healthCheckEnabled?: boolean;
   embeddingProviderId?: string;
   embeddingModel?: string;
   fallbackProviderIds?: string[];
@@ -74,7 +75,7 @@ export interface PricingConfig {
   cachedInputPrice?: number;
 }
 
-// 鈹€鈹€ Provider 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Provider ───────────────────────────────────────────────────────────
 
 export interface ProviderModel {
   id: string;
@@ -89,7 +90,7 @@ export interface ProviderInfo {
   models: ProviderModel[];
 }
 
-// 鈹€鈹€ Skill 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Skill ──────────────────────────────────────────────────────────────
 
 export interface Skill {
   id: string;
@@ -99,7 +100,7 @@ export interface Skill {
   path?: string;
 }
 
-// 鈹€鈹€ MCP Tool 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── MCP Tool ───────────────────────────────────────────────────────────
 
 export interface McpTool {
   name: string;
@@ -108,7 +109,7 @@ export interface McpTool {
   inputSchema?: Record<string, unknown>;
 }
 
-// 鈹€鈹€ Task 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Task ───────────────────────────────────────────────────────────────
 
 export interface ResumableTask {
   id: string;
@@ -117,7 +118,7 @@ export interface ResumableTask {
   phase?: string;
 }
 
-// 鈹€鈹€ Chat 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Chat ───────────────────────────────────────────────────────────────
 
 export interface ChatMessage {
   role: string;
@@ -141,7 +142,7 @@ export interface ModelOption {
   providerName: string;
 }
 
-// 鈹€鈹€ Workspace 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Workspace ──────────────────────────────────────────────────────────
 
 export interface Workspace {
   id: string;
@@ -150,7 +151,7 @@ export interface Workspace {
   initial: string;
 }
 
-// 鈹€鈹€ Workspace file explorer 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Workspace file explorer ────────────────────────────────────────────
 
 export interface WorkspaceItem {
   name: string;
@@ -160,7 +161,7 @@ export interface WorkspaceItem {
   size?: number;
 }
 
-// 鈹€鈹€ Git 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Git ────────────────────────────────────────────────────────────────
 
 export interface GitModifiedFile {
   status: string;
@@ -182,7 +183,7 @@ export interface ModifiedFileEntry {
   time: string;
 }
 
-// 鈹€鈹€ Context tokens 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Context tokens ─────────────────────────────────────────────────────
 
 export interface ContextTokenInfo {
   used: number;
@@ -190,14 +191,14 @@ export interface ContextTokenInfo {
   percent: number;
 }
 
-// 鈹€鈹€ Task list 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Task list ──────────────────────────────────────────────────────────
 
 export interface TaskListItem {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'done';
   description: string;
 }
 
-// 鈹€鈹€ API Error 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── API Error ──────────────────────────────────────────────────────────
 
 export interface ApiErrorResponse {
   error?: string;

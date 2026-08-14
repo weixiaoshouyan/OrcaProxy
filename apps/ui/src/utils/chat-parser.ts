@@ -1,17 +1,24 @@
-﻿// ---- Chat Message Parser ----
+// ---- Chat Message Parser ----
 // Extracted from Chat.tsx for maintainability
 
 interface ToolBlock {
   type: 'tool';
   toolName: string;
+  label?: string;
   content: string;
   status: 'running' | 'done' | 'error';
+  duration?: string;
 }
 
 interface ThinkBlock {
   type: 'think';
   content: string;
   status: 'running' | 'done';
+}
+
+interface TodosBlock {
+  type: 'todos';
+  content: string;
 }
 
 interface TextBlock {
@@ -31,11 +38,13 @@ interface TaskItem {
   status: 'pending' | 'running' | 'completed' | 'failed';
 }
 
-type ParsedBlock = ToolBlock | ThinkBlock | TextBlock;
+type ParsedBlock = ToolBlock | ThinkBlock | TodosBlock | TextBlock;
 
-// Backend writes: `> 🔧 **Agent Executing Tool:** \`name\`...` (emoji allowed)
-const TOOL_SPLITTER = /^\s*>\s+[^\n]*?\*\*Agent Executing[^:*]*:\*\*\s+`([^`]+)`\.\.\./gm;
-const CODE_BLOCK_REST = /^\n*```\n([\s\S]*?)\n```/;
+// Backend per-tool announcements:
+//   > 🔧 **Agent Executing Tool:** `write_workspace_file` — src/App.tsx...
+// (batch announcements "N tools in parallel" are no longer emitted)
+const ANNO_LINE = /^\s*>\s+[^\n]*?\*\*Agent Executing[^:*]*:\*\*\s+`([^`]+)`(?:\s*—\s*([^\n]*?))?\.\.\.\s*$/;
+const CODE_BLOCK_SEG = /(```[\s\S]*?```)/g;
 const THINK_TAG_OPEN = /<\s*think\s*>/g;
 const THINK_TAG_CLOSE = /<\s*\/\s*think\s*>/g;
 const THINK_BLOCK = /<thinking>([\s\S]*?)(?:<\/thinking>|$)/g;
@@ -43,6 +52,8 @@ const CODE_BLOCK = /```(\w*)\n([\s\S]*?)```/g;
 const TASK_PENDING = /^-\s*\[\s\]\s*/;
 const TASK_COMPLETED = /^-\s*\[[xX]\]\s*/;
 const TASK_RUNNING = /^-\s*\[>\]\s*/;
+const TODOS_LINE = /^\s*>\s+📋\s+Todos\s+\[\d+\/\d+\]/;
+const DURATION_SUFFIX = /^\((\d+(?:\.\d+)?)s\)\s*$/;
 
 // Simple LRU cache for parsed content during streaming
 const parseCache = new Map<string, { blocks: ParsedBlock[]; timestamp: number }>();
@@ -77,49 +88,100 @@ function setCachedParse(key: string, blocks: ParsedBlock[]): void {
 
 /**
  * Split tool blocks from text blocks in assistant message content.
- * Handles both completed (```) and running (streaming) tool blocks.
+ *
+ * Sequential walk over the stream: per-tool announcements (`> 🔧 **Agent
+ * Executing Tool:** \`name\` — label...`) are queued, and each language-less
+ * code block that follows is paired with the oldest pending announcement.
+ * Handles both completed and running (streaming) tool blocks, plus compact
+ * "📋 Todos [x/y]" host lines and "(Ns)" duration suffixes.
  */
 function parseToolsAndText(content: string): ParsedBlock[] {
   const parts: ParsedBlock[] = [];
-  TOOL_SPLITTER.lastIndex = 0;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
+  const pending: { name: string; label?: string }[] = [];
+  const segments = content.split(CODE_BLOCK_SEG);
+  let buf = '';
+  let lastWasTool = false;
 
-  while ((match = TOOL_SPLITTER.exec(content)) !== null) {
-    const textBefore = content.substring(lastIndex, match.index);
-    if (textBefore.trim()) {
-      parts.push({ type: 'text', content: textBefore });
+  const flushText = () => {
+    if (buf.trim()) {
+      parts.push({ type: 'text', content: buf });
+      buf = '';
+    }
+  };
+
+  for (const seg of segments) {
+    // Code block segment
+    if (seg.startsWith('```') && seg.endsWith('```')) {
+      const inner = seg.slice(3, -3);
+      const nl = inner.indexOf('\n');
+      const lang = nl >= 0 ? inner.slice(0, nl).trim() : '';
+      const code = nl >= 0 ? inner.slice(nl + 1) : inner;
+      if (pending.length > 0 && !lang) {
+        const ann = pending.shift()!;
+        flushText();
+        const status = code.startsWith('Error:') || code.includes('[Execution Error]')
+          ? 'error' as const
+          : 'done' as const;
+        parts.push({ type: 'tool', toolName: ann.name, label: ann.label, content: code, status });
+        lastWasTool = true;
+      } else {
+        // Model-authored code block (has a language tag or no pending tool) → text
+        buf += seg;
+        lastWasTool = false;
+      }
+      continue;
     }
 
-    const toolName = match[1];
-    const rest = content.substring(TOOL_SPLITTER.lastIndex);
-    const codeBlockMatch = CODE_BLOCK_REST.exec(rest);
-
-    if (codeBlockMatch) {
-      parts.push({ type: 'tool', toolName, content: codeBlockMatch[1], status: 'done' });
-      TOOL_SPLITTER.lastIndex += codeBlockMatch[0].length;
-    } else {
-      const remaining = rest.trim();
-      parts.push({ type: 'tool', toolName, content: remaining, status: 'running' });
-      TOOL_SPLITTER.lastIndex = content.length;
+    // Text segment: scan line by line for announcements / todos / durations
+    for (const line of seg.split('\n')) {
+      const anno = line.match(ANNO_LINE);
+      if (anno) {
+        flushText();
+        pending.push({ name: anno[1].trim(), label: anno[2]?.trim() || undefined });
+        lastWasTool = false;
+        continue;
+      }
+      if (TODOS_LINE.test(line)) {
+        flushText();
+        parts.push({ type: 'todos', content: line.trim() });
+        lastWasTool = false;
+        continue;
+      }
+      if (lastWasTool && DURATION_SUFFIX.test(line.trim())) {
+        const d = line.trim().match(DURATION_SUFFIX)![1];
+        const last = parts[parts.length - 1];
+        if (last && last.type === 'tool') (last as ToolBlock).duration = `${d}s`;
+        lastWasTool = false;
+        continue;
+      }
+      buf += line + '\n';
+      lastWasTool = false;
     }
-
-    lastIndex = TOOL_SPLITTER.lastIndex;
   }
 
-  const tail = content.substring(lastIndex);
-  if (tail.trim()) {
-    parts.push({ type: 'text', content: tail });
+  // Flush pending announcements (aborted / still streaming) as running rows
+  for (const ann of pending) {
+    flushText();
+    parts.push({ type: 'tool', toolName: ann.name, label: ann.label, content: '', status: 'running' });
   }
-
+  flushText();
   return parts;
 }
 
 /**
- * Remove 鎬濊€冭繃绋?/ thinking blocks from text content.
+ * Remove thinking blocks from text content.
  */
 export function cleanThinkTags(content: string): string {
   return content.replace(/<thinking>[\s\S]*?<\/thinking>/g, '');
+}
+
+/**
+ * True when the assistant content contains agent activity (think blocks,
+ * tool announcements, or todo lines) — used to give such messages a
+ * full-width timeline layout instead of a narrow bubble.
+ */
+export function hasAgentActivity(content: string): boolean {
+  return /<think|<thinking|Agent Executing|>\s*📋\s*Todos/i.test(content || '');
 }
 
 /**

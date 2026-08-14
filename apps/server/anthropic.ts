@@ -422,7 +422,7 @@ export function formatAnthropicError(statusCode: number, message: string): strin
   });
 }
 // ============================================================
-// Anthropic SSE 鈫?OpenAI SSE conversion
+// Anthropic SSE →OpenAI SSE conversion
 // Used by /v1/chat/completions when target is Anthropic
 // ============================================================
 

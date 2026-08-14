@@ -175,7 +175,7 @@ export default function Skills({ lang }: SkillsProps) {
             {loadingList ? (
               <div className="flex flex-col items-center justify-center py-20 text-gray-400 gap-2">
                 <div className="w-6 h-6 border-2 border-t-[var(--color-primary)] border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin"></div>
-                <span className="text-xs font-semibold">加载技能中...</span>
+                <span className="text-xs font-semibold">{lang === 'en' ? 'Loading skills...' : '加载技能中...'}</span>
               </div>
             ) : filteredSkills.length === 0 ? (
               <div className="text-center py-20 text-xs font-bold text-[var(--color-text-muted)]">
@@ -226,7 +226,7 @@ export default function Skills({ lang }: SkillsProps) {
           {loadingDetail ? (
             <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-2">
               <div className="w-8 h-8 border-2 border-t-[var(--color-primary)] border-r-transparent border-b-transparent border-l-transparent rounded-full animate-spin"></div>
-              <span className="text-xs font-semibold">正在载入技能数据...</span>
+              <span className="text-xs font-semibold">{lang === 'en' ? 'Loading skill data...' : '正在载入技能数据...'}</span>
             </div>
           ) : !selectedSkill ? (
             <div className="flex-1 flex flex-col items-center justify-center text-[var(--color-text-muted)] text-center max-w-sm mx-auto gap-4">
@@ -254,7 +254,7 @@ export default function Skills({ lang }: SkillsProps) {
                         value={editName}
                         onChange={(e) => setEditName(e.target.value)}
                         className="bg-[var(--color-bg-base)] border border-[var(--color-border-base)] rounded-lg px-2.5 py-1 text-base font-bold text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-primary)]"
-                        placeholder="输入技能名称"
+                        placeholder={lang === 'en' ? 'Enter skill name' : '输入技能名称'}
                       />
                     ) : (
                       <h3 className="text-lg font-bold text-[var(--color-text-primary)] truncate">
@@ -271,11 +271,11 @@ export default function Skills({ lang }: SkillsProps) {
                       value={editDesc}
                       onChange={(e) => setEditDesc(e.target.value)}
                       className="w-full bg-[var(--color-bg-base)] border border-[var(--color-border-base)] rounded-lg px-2.5 py-1 text-xs text-[var(--color-text-secondary)] focus:outline-none focus:border-[var(--color-primary)]"
-                      placeholder="输入技能简述"
+                      placeholder={lang === 'en' ? 'Enter skill description' : '输入技能简述'}
                     />
                   ) : (
                     <p className="text-xs font-semibold text-[var(--color-text-secondary)] line-clamp-1">
-                      {selectedSkill.description || '暂无简述'}
+                      {selectedSkill.description || (lang === 'en' ? 'No description' : '暂无简述')}
                     </p>
                   )}
                 </div>
@@ -289,7 +289,7 @@ export default function Skills({ lang }: SkillsProps) {
                         className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg px-3 py-1.5 text-xs font-bold cursor-pointer transition-colors shadow-sm"
                       >
                         <Save className="w-3.5 h-3.5" />
-                        <span>保存</span>
+                        <span>{lang === 'en' ? 'Save' : '保存'}</span>
                       </button>
                       <button
                         onClick={() => {
@@ -301,7 +301,7 @@ export default function Skills({ lang }: SkillsProps) {
                         className="flex items-center gap-1 bg-gray-500 hover:bg-gray-600 text-white rounded-lg px-3 py-1.5 text-xs font-bold cursor-pointer transition-colors shadow-sm"
                       >
                         <X className="w-3.5 h-3.5" />
-                        <span>取消</span>
+                        <span>{lang === 'en' ? 'Cancel' : '取消'}</span>
                       </button>
                     </>
                   ) : (
@@ -311,14 +311,14 @@ export default function Skills({ lang }: SkillsProps) {
                         className="flex items-center gap-1 bg-[var(--color-bg-sidebar)] border border-[var(--color-border-base)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-primary)] rounded-lg px-3 py-1.5 text-xs font-bold cursor-pointer transition-all shadow-sm"
                       >
                         <Edit className="w-3.5 h-3.5 text-blue-500" />
-                        <span>编辑技能</span>
+                        <span>{lang === 'en' ? 'Edit Skill' : '编辑技能'}</span>
                       </button>
                       <button
                         onClick={handleDeleteSkill}
                         className="flex items-center gap-1 bg-[var(--color-bg-sidebar)] border border-[var(--color-border-base)] hover:bg-red-50 dark:hover:bg-red-950/20 text-red-500 rounded-lg px-3 py-1.5 text-xs font-bold cursor-pointer transition-all shadow-sm"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                        <span>删除</span>
+                        <span>{lang === 'en' ? 'Delete' : '删除'}</span>
                       </button>
                     </>
                   )}

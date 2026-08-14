@@ -39,12 +39,12 @@ function extractFilePath(name: string, args: unknown): string | undefined {
     if (!a || typeof a !== "object") return undefined;
     const candidate =
       (a as any).path || (a as any).filePath || (a as any).filepath || (a as any).filename ||
-      (a as any).targetPath || (a as any).relativePath || (a as any).fullPath;
+      (a as any).targetPath || (a as any).relativeFilePath || (a as any).relativePath || (a as any).fullPath;
     if (typeof candidate === "string" && candidate) return candidate;
     if (Array.isArray((a as any).files)) {
       const first = (a as any).files[0];
       if (first && typeof first === "object") {
-        const fp = (first as any).path || (first as any).filePath || (first as any).filepath;
+        const fp = (first as any).path || (first as any).filePath || (first as any).filepath || (first as any).relativeFilePath;
         if (typeof fp === "string" && fp) return fp;
       }
     }

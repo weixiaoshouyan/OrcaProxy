@@ -2,7 +2,7 @@
 // Pulls the active task's run_terminal_command results from the API and
 // renders them like a real terminal session (command + stdout/stderr).
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Terminal, X, Trash2, Copy, Loader } from 'lucide-react';
+import { Terminal, X, Trash2, Copy, Loader, RotateCw } from 'lucide-react';
 import { api } from '../api';
 import type { Language } from '../i18n';
 
@@ -11,6 +11,7 @@ interface CommandEntry {
   command: string;
   output: string;
   success: boolean;
+  running?: boolean;
 }
 
 interface TaskResultRecord {
@@ -21,6 +22,7 @@ interface TaskResultRecord {
 }
 
 interface TaskDetailResponse {
+  workspacePath?: string;
   results?: TaskResultRecord[];
 }
 
@@ -50,6 +52,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ taskId, lang }) =>
   const [expanded, setExpanded] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastTaskIdRef = useRef<string | null>(null);
+  const workspacePathRef = useRef<string>('');
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -65,7 +68,9 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ taskId, lang }) =>
     try {
       setLoading(true);
       const { data } = await api.get(`/api/tasks/${taskId}`);
-      const results: TaskResultRecord[] = (data as TaskDetailResponse)?.results || [];
+      const task = data as TaskDetailResponse;
+      if (task.workspacePath) workspacePathRef.current = task.workspacePath;
+      const results: TaskResultRecord[] = task?.results || [];
       const commands = results
         .filter((r) => r.name === 'run_terminal_command')
         .map((r: TaskResultRecord, idx: number) => ({
@@ -81,6 +86,28 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ taskId, lang }) =>
       setLoading(false);
     }
   }, [taskId]);
+
+  // P1-8: rerun a failed command directly from the panel (reuses the same
+  // sandboxed executor the agent uses, so the dangerous-command blacklist
+  // still applies).
+  const rerun = useCallback(async (entry: CommandEntry) => {
+    const ws = workspacePathRef.current;
+    if (!ws) return;
+    setEntries(prev => prev.map(e => (e.id === entry.id ? { ...e, running: true } : e)));
+    try {
+      const { data } = await api.post('/api/workspace/run-command', {
+        command: entry.command,
+        workspacePath: ws,
+      });
+      setEntries(prev => prev.map(e => (e.id === entry.id
+        ? { ...e, output: data.output || '', success: !data.blocked && !looksLikeError(data.output || ''), running: false }
+        : e)));
+    } catch (e) {
+      setEntries(prev => prev.map(e => (e.id === entry.id
+        ? { ...e, output: String(e), success: false, running: false }
+        : e)));
+    }
+  }, []);
 
   useEffect(() => {
     if (taskId !== lastTaskIdRef.current) {
@@ -118,7 +145,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ taskId, lang }) =>
           <button onClick={copyAll} className="p-1 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer" title={lang === 'en' ? 'Copy all' : '复制全部'}>
             <Copy className="w-3 h-3" />
           </button>
-          <button onClick={() => setExpanded(!expanded)} className="p-1 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer" title={expanded ? 'Collapse' : 'Expand'}>
+          <button onClick={() => setExpanded(!expanded)} className="p-1 text-gray-400 hover:text-gray-200 transition-colors cursor-pointer" title={expanded ? (lang === 'en' ? 'Collapse' : '收起') : (lang === 'en' ? 'Expand' : '展开')}>
             {expanded ? '▾' : '▸'}
           </button>
           <button onClick={clear} className="p-1 text-gray-400 hover:text-red-400 transition-colors cursor-pointer" title={lang === 'en' ? 'Clear' : '清空'}>
@@ -146,16 +173,26 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ taskId, lang }) =>
           ) : (
             <div className="space-y-3">
               {entries.map((e) => (
-                <div key={e.id} className="space-y-0.5">
+                <div key={e.id} className="space-y-0.5 group/entry">
                   <div className="flex items-center gap-1.5 text-emerald-400">
                     <span className="text-gray-600 select-none">❯</span>
-                    <span className="font-semibold whitespace-pre-wrap break-all">{e.command || '(no command)'}</span>
+                    <span className="font-semibold whitespace-pre-wrap break-all">{e.command || (lang === 'en' ? '(no command)' : '(无命令)')}</span>
                     <span className={`text-[9px] px-1 rounded ${e.success ? 'text-emerald-500/80' : 'text-red-400'}`}>
-                      {e.success ? '✓' : '✗'}
+                      {e.running ? '…' : (e.success ? '✓' : '✗')}
                     </span>
+                    {/* P1-8: rerun a failed command in-place */}
+                    {!e.success && !e.running && (
+                      <button
+                        onClick={() => void rerun(e)}
+                        className="p-0.5 text-gray-500 hover:text-emerald-400 transition-colors cursor-pointer opacity-0 group-hover/entry:opacity-100"
+                        title={lang === 'en' ? 'Rerun command' : '重新执行命令'}
+                      >
+                        <RotateCw className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
                   <pre className={`whitespace-pre-wrap break-all pl-4 text-gray-300 ${e.success ? '' : 'text-red-300'}`}>
-                    {e.output || <span className="text-gray-600 italic">(no output)</span>}
+                    {e.output || <span className="text-gray-600 italic">{lang === 'en' ? '(no output)' : '(无输出)'}</span>}
                   </pre>
                 </div>
               ))}

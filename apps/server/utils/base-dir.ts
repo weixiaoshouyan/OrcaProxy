@@ -53,3 +53,26 @@ export function getStaticDir(baseDir: string, moduleDirname: string): string {
 
 export const IS_ELECTRON = _isElectron;
 export const IS_PKG = _isPkg;
+
+/**
+ * One-time migration for runtime data files that older builds wrote to
+ * `apps/data/*.json` (a legacy BASE_DIR derivation in providers.ts / cache.ts
+ * / billing.ts). The unified layout is `<root>/data/`. If the legacy file
+ * exists and the new location does not, copy it over so existing configs,
+ * billing stats and caches survive the upgrade.
+ *
+ * @param filename  data file name, e.g. "config.json"
+ * @param legacyDir optional explicit legacy directory (defaults to `<root>/apps/data`)
+ */
+export function migrateLegacyDataFile(filename: string, legacyDir?: string): void {
+  try {
+    const newPath = path.join(resolveBaseDir(__dirname, 3), "data", filename);
+    if (fs.existsSync(newPath)) return;
+    const legacy = legacyDir ? path.join(legacyDir, filename) : path.join(__dirname, "..", "data", filename);
+    if (fs.existsSync(legacy)) {
+      fs.mkdirSync(path.dirname(newPath), { recursive: true });
+      fs.copyFileSync(legacy, newPath);
+      console.log(`[migrate] Copied legacy data file ${legacy} -> ${newPath}`);
+    }
+  } catch { /* best effort — never break startup over a migration */ }
+}

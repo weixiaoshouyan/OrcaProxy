@@ -45,6 +45,7 @@ import { resolveHealthyModel, buildProbeUrl } from "./services/health";
 import { setServerPort } from "./services/task-resume";
 import { initMCPServers, shutdownMCPServers } from "./mcp";
 import { streamSSE } from "./proxy/stream";
+import { fetchWithRetry } from "./agent/loop";
 import { registerModelRoutes } from "./proxy/models";
 import { registerChatRoute } from "./routes/chat";
 import { registerManagementRoutes, setupIPCHandlers } from "./routes/management";
@@ -52,7 +53,7 @@ import { registerWorkspaceRoutes } from "./routes/workspace";
 import { registerGitRoutes } from "./routes/git";
 import { registerAppsRoutes } from "./routes/apps";
 import { registerExtendedRoutes } from "./routes/extended";
-import { seedBillingFile, accumulateCost } from "./services/billing";
+import { seedBillingFile, accumulateCost, qualifyModel } from "./services/billing";
 import { initSkillsDirectory } from "./services/skills";
 import { clearStaleClaims } from "./agent/claims";
 import { scanForInterruptedTasks } from "./services/recovery";
@@ -126,7 +127,7 @@ app.use((req, _res, next) => {
   next();
 });
 // CORS: only echo back localhost / same-origin requests. We deliberately do
-// NOT reflect the caller's origin 鈥?reflecting an arbitrary origin together
+// NOT reflect the caller's origin —reflecting an arbitrary origin together
 // with `Access-Control-Allow-Credentials: true` would let any malicious
 // website read responses cross-origin and abuse the user's LLM API keys.
 const _ALLOWED_ORIGINS = new Set<string>([
@@ -173,7 +174,7 @@ app.use((req, _res, next) => {
 
 // Local token auth
 // Security: token is set as HttpOnly cookie on initial page load (GET / with ?token=xxx),
-// then all subsequent requests authenticate via cookie 鈥?never via URL query string.
+// then all subsequent requests authenticate via cookie —never via URL query string.
 app.use((req, res, next) => {
   // Constant-time comparison to avoid a timing side channel on the token.
   const tokenMatches = (candidate: unknown): candidate is string =>
@@ -266,7 +267,7 @@ app.post("/v1/responses", async (req, res) => {
     const resolvedModel = await resolveHealthyModel(body.model, resolveModel);
     const active = resolvedModel.provider;
     const apiKey = resolvedModel.apiKey;
-    const chatReq = transformRequest(body, resolvedModel.model);
+    const chatReq = transformRequest(body, resolvedModel.model, { id: active.id, name: active.name, model: resolvedModel.model });
     const targetUrl = buildProbeUrl(active.baseUrl, "/chat/completions");
     if (isBlockedTarget(targetUrl)) {
       log("warn", `[SSRF] Blocked outbound request to ${targetUrl}`);
@@ -279,12 +280,15 @@ app.post("/v1/responses", async (req, res) => {
 
     const abortController = new AbortController();
     attachClientAbort(req, res, abortController, "Codex");
-    const upstreamResp = await fetch(targetUrl, {
+    // Retry transient upstream failures (429/5xx) so a flaky gateway does not
+    // surface as a mid-stream abort to the Codex client.
+    const upstreamResp = await fetchWithRetry(targetUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(chatReq),
       signal: abortController.signal,
-    });
+      timeoutMs: 600000,
+    }, 3, 2000);
     if (!upstreamResp.ok) {
       const errText = await upstreamResp.text();
       res.write(formatError(upstreamResp.status, errText));
@@ -294,7 +298,7 @@ app.post("/v1/responses", async (req, res) => {
     const state = createStreamState(resolvedModel.model);
     await streamSSE(upstreamResp, req, res, processChunk, generateEndEvents, () => state, state, formatError, (s) => {
       if (s && s.usage) {
-        accumulateCost(resolvedModel.model, s.usage.input_tokens, s.usage.output_tokens, s.usage.input_tokens_details?.cached_tokens || 0);
+        accumulateCost(qualifyModel(active.id, resolvedModel.model), s.usage.input_tokens, s.usage.output_tokens, s.usage.input_tokens_details?.cached_tokens || 0);
       }
     });
   } catch (err: any) {
@@ -383,7 +387,7 @@ app.post("/v1/messages", async (req, res) => {
       } else {
         const data = await upstreamResp.json() as any;
         if (data?.usage) {
-          accumulateCost(resolved.model, data.usage.input_tokens || 0, data.usage.output_tokens || 0, 0);
+          accumulateCost(qualifyModel(resolved.provider.id, resolved.model), data.usage.input_tokens || 0, data.usage.output_tokens || 0, 0);
         }
         res.setHeader("Content-Type", "application/json");
         res.json(data);
@@ -415,7 +419,7 @@ app.post("/v1/messages", async (req, res) => {
         (_state: any) => generateAnthropicEndEvents(anthropicState),
         () => null as any, anthropicState, formatAnthropicError, (s) => {
           if (s && s.usage) {
-            accumulateCost(resolved.model, s.usage.input_tokens, s.usage.output_tokens, 0);
+            accumulateCost(qualifyModel(resolved.provider.id, resolved.model), s.usage.input_tokens, s.usage.output_tokens, 0);
           }
         });
     }
@@ -451,7 +455,7 @@ app.all("/v1/*", async (req, res) => {
   }
 
   // Pass-through: req.url starts with /v1/...; if the provider's baseUrl
-  // already ends with /v1, we must NOT re-append /v1 鈥?strip it from req.url
+  // already ends with /v1, we must NOT re-append /v1 —strip it from req.url
   // so the final URL is correct (e.g. LongCat: https://api.longcat.chat/openai/v1/chat/completions).
   const trimmedBase = provider.baseUrl.replace(/\/+$/, "");
   let pathSuffix = req.url;
@@ -510,7 +514,7 @@ app.all("/v1/*", async (req, res) => {
       try {
         const json = JSON.parse(text);
         if (json.usage && targetModel) {
-          accumulateCost(targetModel, json.usage.prompt_tokens, json.usage.completion_tokens, json.usage.prompt_tokens_details?.cached_tokens || 0);
+          accumulateCost(qualifyModel(provider.id, targetModel), json.usage.prompt_tokens, json.usage.completion_tokens, json.usage.prompt_tokens_details?.cached_tokens || 0);
         }
       } catch (e) {}
       res.status(resp.status).setHeader("Content-Type", resp.headers.get("content-type") || "application/json").send(text);
@@ -594,16 +598,31 @@ app.get("/api/agent/stream", (req, res) => {
   for (const client of agentEventClients) {
     if (!client.writableEnded) client.write(data);
   }
+  // P0-2: Desktop notification when a task finishes or fails — only in
+  // Electron mode (the renderer may be hidden/minimized to tray, and the
+  // browser tab may not have notification permission).
+  try {
+    if (event && (event.type === "task_complete" || event.type === "task_error")) {
+      const { showElectronNotification } = require("./routes/management");
+      const goal = (event.data && (event.data.goal || event.data.status || "")) || "";
+      const shortGoal = typeof goal === "string" ? (goal.length > 80 ? goal.slice(0, 80) + "…" : goal) : "";
+      if (event.type === "task_complete") {
+        showElectronNotification("✅ Orca 任务完成", shortGoal || `任务 ${event.taskId} 已完成`, { silent: false });
+      } else {
+        showElectronNotification("⚠️ Orca 任务出错", shortGoal || `任务 ${event.taskId} 执行出错，请查看详情`, { silent: false });
+      }
+    }
+  } catch { /* best effort — notification must never break the agent loop */ }
 };
 
 // Configure server timeouts for long agent runs
-// 闀夸换鍔℃敮鎸侊細绂佺敤鎵€鏈夐粯璁よ秴鏃讹紝璁?agent 鍙互鏃犱腑鏂湴璺戞暟灏忔椂
+// 长任务支持：禁用所有默认超时，让 agent 可以无中断地跑数小时
 server.timeout = 0;
 server.keepAliveTimeout = 0;
-server.headersTimeout = 0;          // 涔嬪墠 600000 (10min) 鏄彟涓€涓?鑾悕涓柇"鏉ユ簮
-server.requestTimeout = 0;          // 0 = 绂佺敤璇锋眰瓒呮椂
-server.maxHeadersCount = 0;         // 0 = 鏃犻檺鍒讹紙闃叉 chunked SSE 琚埅鏂級
-server.maxRequestsPerSocket = 0;    // 0 = 鏃犻檺鍒讹紙keep-alive 鎸佺画澶嶇敤锛?
+server.headersTimeout = 0;          // 之前 600000 (10min) 是另一个"莫名中断"来源
+server.requestTimeout = 0;          // 0 = 禁用请求超时
+server.maxHeadersCount = 0;         // 0 = 无限制（防止 chunked SSE 被截断）
+server.maxRequestsPerSocket = 0;    // 0 = 无限制（keep-alive 持续复用）
 
 // ---- Graceful shutdown ----
 function gracefulShutdown(signal: string) {

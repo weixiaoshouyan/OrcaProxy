@@ -34,46 +34,46 @@ function ThinkingBlockInner({ content, status, lang }: ThinkingBlockProps) {
   };
 
   return (
-    <div className={`my-3 border rounded-xl overflow-hidden transition-all duration-300 ${
+    <div className={`my-3 border rounded-xl overflow-hidden transition-all duration-300 shadow-[var(--shadow-xs)] ${
       isRunning 
-        ? 'border-blue-200/40 dark:border-blue-800/30 shadow-sm' 
-        : 'border-blue-200/20 dark:border-blue-900/20'
+        ? 'border-[color-mix(in_srgb,var(--color-primary)_35%,var(--color-border-base))]' 
+        : 'border-[var(--color-border-base)]'
     }`}>
       <div className={`flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none transition-colors duration-200 ${
-        isRunning ? 'bg-blue-50/50 dark:bg-blue-950/30' : 'bg-blue-50/30 dark:bg-blue-950/20'
+        isRunning ? 'bg-[color-mix(in_srgb,var(--color-primary)_8%,var(--color-bg-card))]' : 'bg-[var(--color-bg-card)]'
       }`}
         onClick={() => setIsExpanded(!isExpanded)}
       >
         {isRunning ? (
-          <Brain className="w-4 h-4 text-blue-500 animate-pulse" />
+          <Brain className="w-4 h-4 text-[var(--color-primary)] animate-pulse" />
         ) : (
-          <Zap className="w-4 h-4 text-blue-400" />
+          <Zap className="w-4 h-4 text-[var(--color-text-muted)]" />
         )}
-        <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">
+        <span className="text-xs font-semibold text-[var(--color-text-secondary)]">
           {lang === 'en' ? 'Thinking' : '思考过程'}
         </span>
         {isRunning && (
           <>
-            <span className="text-[10px] text-blue-500/70 animate-pulse ml-1">
+            <span className="text-[10px] text-[var(--color-primary)]/70 animate-pulse ml-1">
               {lang === 'en' ? '...' : '进行中..'}
             </span>
-            <span className="text-[10px] text-blue-400/60 font-mono ml-1">
+            <span className="text-[10px] text-[var(--color-text-muted)] font-mono ml-1">
               {formatTime(elapsed)}
             </span>
           </>
         )}
         {!isRunning && elapsed > 0 && (
-          <span className="text-[10px] text-blue-400/60 font-mono ml-1">
+          <span className="text-[10px] text-[var(--color-text-muted)] font-mono ml-1">
             {formatTime(elapsed)}
           </span>
         )}
         <div className="flex-1" />
-        <button className="p-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
-          <ChevronDown className={`w-4 h-4 text-blue-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
+        <button className="p-1 rounded hover:bg-[var(--color-bg-hover)] transition-colors">
+          <ChevronDown className={`w-4 h-4 text-[var(--color-text-muted)] transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
         </button>
       </div>
       {isExpanded && (
-        <div className="think-block-content p-4 text-xs font-mono whitespace-pre-wrap text-gray-600 dark:text-gray-300 leading-relaxed max-h-[400px] overflow-y-auto bg-white/30 dark:bg-slate-950/20 border-t border-blue-200/20 dark:border-blue-900/20">
+        <div className="think-block-content p-4 text-xs font-mono whitespace-pre-wrap text-[var(--color-text-secondary)] leading-relaxed max-h-[400px] overflow-y-auto bg-[var(--color-bg-base)]/50 border-t border-[var(--color-border-base)]">
           {cleanedContent || (lang === 'en' ? 'Thinking...' : '正在思考..')}
         </div>
       )}

@@ -141,4 +141,29 @@ test("dropOrphanedToolResults removes tool messages without matching assistant",
   expect(cleaned.some((m: any) => m.tool_call_id === "call_b")).toBe(true);
 });
 
+// ---- Plan parsing: think-block stripping ----
+const { stripThinkBlocks, parseTaskPlan } = require("../agent/planner");
+
+test("stripThinkBlocks removes wrapped reasoning blocks", () => {
+  const text = "<think>\n用户要求分析代码库。\n</think>\n- [ ] 分析代码库结构";
+  const stripped = stripThinkBlocks(text);
+  expect(stripped.includes("<think>")).toBe(false);
+  expect(stripped.includes("</think>")).toBe(false);
+  expect(stripped.includes("分析代码库结构")).toBe(true);
+});
+
+test("parseTaskPlan ignores think-block lines", () => {
+  const text = "<think>\n第一步思考内容\n</think>\n- [ ] 读取 README\n- [ ] 分析依赖";
+  const steps = parseTaskPlan(stripThinkBlocks(text));
+  expect(steps.length).toBe(2);
+  expect(steps[0].description).toBe("读取 README");
+  expect(steps[1].description).toBe("分析依赖");
+});
+
+test("stripThinkBlocks removes stray tags", () => {
+  const stripped = stripThinkBlocks("<think>\n</think>\n- [ ] 开始");
+  expect(stripped.includes("think")).toBe(false);
+  expect(stripped.includes("开始")).toBe(true);
+});
+
 console.log("\n✅ All agent feature tests passed!");

@@ -21,6 +21,13 @@
     "appId": "com.orca.proxy",
     "productName": "Orca Proxy",
     "forceCodeSigning": false,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "your-github-username",
+        "repo": "orca-universal-proxy"
+      }
+    ],
     "directories": {
       "output": "release"
     },
@@ -58,6 +65,7 @@
   },
   "dependencies": {
     "dotenv": "^16.4.0",
+    "electron-updater": "^6.8.9",
     "express": "^4.21.0",
     "express-rate-limit": "^7.5.0",
     "fflate": "^0.8.3"

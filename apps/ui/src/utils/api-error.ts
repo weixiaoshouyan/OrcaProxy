@@ -187,7 +187,7 @@ export function setupApiInterceptors(
       };
     };
   },
-  onError?: (error: ApiError) => void
+  onError?: (error: ApiError, config?: InternalAxiosRequestConfig) => void
 ): () => void {
   const responseInterceptor = instance.interceptors.response.use(
     (response: AxiosResponse) => response,
@@ -224,7 +224,8 @@ export function setupApiInterceptors(
           }
         }
         if (onError) {
-          onError(apiError);
+          const errCfg = (error as AxiosError)?.config;
+          onError(apiError, errCfg as InternalAxiosRequestConfig | undefined);
         } else {
           console.error('[API Error]', apiError.toUserMessage(), apiError.detail);
         }

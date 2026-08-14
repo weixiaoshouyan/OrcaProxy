@@ -125,6 +125,46 @@ async function main() {
   const reader = (resp.body as any).getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let lastToolCall = "";
+  let lastProgressPrinted = -1;
+
+  // P1-7: surface agent lifecycle events (tool calls / progress / status) in
+  // the terminal so long CLI runs are no longer a black box.
+  const emitAgentEvent = (data: any) => {
+    try {
+      if (data.type === "agent_status") {
+        const tool = data.toolName || "";
+        if (tool) process.stdout.write(`\n\x1b[90m⚙️ ${tool}\x1b[0m\n`);
+      } else if (data.type === "tool_call") {
+        let label = data.name || "";
+        try {
+          const args = JSON.parse(data.arguments || "{}");
+          const str = (k: string) => (typeof args[k] === "string" ? args[k] : "");
+          if (label === "run_terminal_command") label = `$ ${str("command")}`;
+          else if (label === "write_workspace_file" || label === "edit_workspace_file") label = `✏️ ${str("relativeFilePath") || str("filePath")}`;
+          else if (label === "read_workspace_file") label = `📄 ${str("relativeFilePath") || str("filePath")}`;
+        } catch { /* keep raw name */ }
+        if (label !== lastToolCall) {
+          process.stdout.write(`\n\x1b[36m→ ${label}\x1b[0m\n`);
+          lastToolCall = label;
+        }
+      } else if (data.type === "tool_result") {
+        const out = typeof data.output === "string" ? data.output : JSON.stringify(data.output || "");
+        const firstLine = out.split("\n")[0]?.slice(0, 140) || "";
+        process.stdout.write(`\x1b[90m  ${data.truncated ? "[truncated] " : ""}${firstLine}\x1b[0m\n`);
+      } else if (data.type === "agent_progress" && typeof data.progress === "number") {
+        const pct = Math.round(data.progress * 100);
+        if (pct !== lastProgressPrinted) {
+          lastProgressPrinted = pct;
+          process.stdout.write(`\r\x1b[90m[${pct}%]\x1b[0m`);
+        }
+      } else if (data.type === "agent_done") {
+        process.stdout.write(`\n\x1b[32m✔ 任务完成: ${data.status || "completed"}\x1b[0m\n`);
+      } else if (data.type === "agent_error") {
+        process.stdout.write(`\n\x1b[31m✖ 任务出错: ${data.error || ""}\x1b[0m\n`);
+      }
+    } catch { /* ignore malformed event frames */ }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -138,6 +178,10 @@ async function main() {
       if (payload === "[DONE]") continue;
       try {
         const data = JSON.parse(payload);
+        if (data.type && (data.type.startsWith("agent_") || data.type === "tool_call" || data.type === "tool_result")) {
+          emitAgentEvent(data);
+          continue;
+        }
         const delta = data.choices?.[0]?.delta;
         if (delta?.content) process.stdout.write(delta.content);
       } catch {

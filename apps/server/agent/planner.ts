@@ -7,6 +7,20 @@ import type { TaskState, TaskStep } from "./task-state";
 
 const STEP_ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
 
+/**
+ * Remove <think>...</think> blocks (and stray <think>/</think> tags) from
+ * assistant text before plan parsing. Reasoning models (DeepSeek etc.) emit
+ * reasoning_content, which engine.ts wraps into <think> blocks for display;
+ * without stripping, the wrapper lines and the reasoning prose inside get
+ * parsed as task steps, producing garbage todo lists.
+ */
+export function stripThinkBlocks(content: string): string {
+  return content
+    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "")
+    .replace(/<\/?think(?:ing)?\s*\/?>/gi, "")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
 function makeStepId(): string {
   let id = "";
   for (let i = 0; i < 6; i++) {

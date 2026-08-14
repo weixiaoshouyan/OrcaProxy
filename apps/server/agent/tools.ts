@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // src/agent/tools.ts
 // Agent tool injection for Build/Plan mode
 // ============================================================
@@ -406,7 +406,7 @@ export function injectAgentTools(
     });
   }
 
-  // 6. Reasonix-style todo tracking (available in Plan and Build modes 鈥?it is read-only bookkeeping)
+  // 6. Reasonix-style todo tracking (available in Plan and Build modes —it is read-only bookkeeping)
   tools.push({
     type: "function",
     function: {
@@ -417,7 +417,7 @@ export function injectAgentTools(
         "level 0 items are PHASES (milestones); the level 1 items following them are their sub-steps; omit level for a flat list. " +
         "Keep exactly one item in_progress at a time; completed items must form a serial prefix (never mark a later item completed while an earlier one is pending); " +
         "a phase completes only after all of its sub-steps are completed. " +
-        "After a step finishes, immediately flip its status 鈥?do not batch completions.",
+        "After a step finishes, immediately flip its status —do not batch completions.",
       parameters: {
         type: "object",
         properties: {
@@ -440,7 +440,7 @@ export function injectAgentTools(
     }
   });
 
-  // 7. Step sign-off with evidence (Build mode only 鈥?blocked during planning)
+  // 7. Step sign-off with evidence (Build mode only —blocked during planning)
   if (useAgent === true) {
     tools.push({
       type: "function",
@@ -451,7 +451,7 @@ export function injectAgentTools(
           "marks the step completed, and advances the task list (the next step becomes in_progress). " +
           "Evidence kinds: verification (a command that actually ran successfully this session), diff/files (paths actually written this session), review, manual. " +
           "Provide step (title or 1-based number), result (what is now true after this step), and at least one evidence item with a summary. " +
-          "Never batch multiple completions in one call 鈥?sign off one step at a time.",
+          "Never batch multiple completions in one call —sign off one step at a time.",
         parameters: {
           type: "object",
           properties: {

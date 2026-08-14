@@ -1,7 +1,8 @@
-﻿import fs from "fs";
+import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { atomicWriteFileSync } from "./utils/helpers";
+import { resolveBaseDir, migrateLegacyDataFile } from "./utils/base-dir";
 
 interface CacheEntry {
   response: any;
@@ -19,9 +20,10 @@ const MAX_ENTRIES = 1000;
 let _cache: CacheData = null as any;
 
 const _isElectron = !!process.env.ORCA_BASE_DIR;
-const _devDir = path.join(__dirname, "..");
-const _portableDir = __dirname;
-const BASE_DIR = _isElectron ? process.env.ORCA_BASE_DIR! : (fs.existsSync(path.join(_portableDir, "public")) ? _portableDir : _devDir);
+// Unified BASE_DIR (see utils/base-dir.ts): all runtime data under <BASE_DIR>/data.
+const BASE_DIR = resolveBaseDir(__dirname, 2);
+// One-time migration: older dev builds wrote the cache to apps/data/cache.json.
+migrateLegacyDataFile("cache.json");
 const CACHE_PATH = path.join(BASE_DIR, "data", "cache.json");
 
 function evictExpiredEntries(): number {

@@ -128,6 +128,11 @@ function findInFolder(baseDir: string, exeName: string, maxDepth: number = 2): s
     const entries = fs.readdirSync(baseDir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
+        // Skip tool/runtime directories: CLI binaries inside them (e.g.
+        // %LOCALAPPDATA%\OpenAI\Codex\bin\...\codex.exe) must never be
+        // mistaken for a desktop GUI executable.
+        const name = entry.name.toLowerCase();
+        if (name === "bin" || name === "runtimes" || name === "node_modules" || name === "resources") continue;
         const found = findInFolder(baseDir + "\\" + entry.name, exeName, maxDepth - 1);
         if (found) return found;
       }
@@ -417,7 +422,7 @@ export function registerAppsRoutes(app: express.Application): void {
 
       let launchPath = app.path;
       if (app.type === "cli") {
-        if (id.startsWith("codex")) updateCodexConfig(proxyUrl);
+        if (id.startsWith("codex")) updateCodexConfig(proxyUrl, provider);
         // Escape shell metacharacters in provider.name to prevent cmd injection
         // (\r\n would allow breaking out of the `echo` line into new commands)
         const displayName = String(provider?.name || "").replace(/["&|^<>%!\r\n]/g, "");
@@ -428,15 +433,23 @@ export function registerAppsRoutes(app: express.Application): void {
         res.json({ ok: true, message: app.name + " terminal opened with " + provider.name });
       } else {
         if (id === "claude-desktop") updateClaudeConfig(proxyUrl);
-        if (id.startsWith("codex")) updateCodexConfig(proxyUrl);
+        if (id.startsWith("codex")) updateCodexConfig(proxyUrl, provider);
         if (id === "cline" || id === "roo-code") {
           updateClineRooConfig(app.path, proxyUrl, provider);
           const vscodeApp = apps.find(a => a.id === "vscode");
           if (vscodeApp && vscodeApp.installed && vscodeApp.path) launchPath = vscodeApp.path;
         }
         if (launchPath && !launchPath.endsWith(".json")) {
+          if (!fs.existsSync(launchPath)) {
+            log("error", `[Launch] Executable not found for ${app.name}: ${launchPath}`);
+            return res.status(400).json({ error: app.name + " executable not found: " + launchPath });
+          }
           const child = spawn(launchPath, [], { detached: true, stdio: "ignore", env: envVars });
+          child.on("error", (err) => { log("error", "[Launch] spawn failed:", err); });
           child.unref();
+        } else if (!launchPath) {
+          log("error", `[Launch] No launch path for ${app.name} (${id})`);
+          return res.status(400).json({ error: app.name + " is not installed or its path is missing" });
         }
         res.json({ ok: true, message: app.name + " launched with " + provider.name });
       }
@@ -514,15 +527,69 @@ function backupFileBeforeWrite(filePath: string): void {
   }
 }
 
-function updateCodexConfig(proxyUrl: string) {
+function updateCodexConfig(proxyUrl: string, provider?: any) {
   try {
     const codexConfigPath = path.join(os.homedir(), ".codex", "config.toml");
     if (fs.existsSync(codexConfigPath)) {
       backupFileBeforeWrite(codexConfigPath);
       let toml = fs.readFileSync(codexConfigPath, "utf-8");
+      // 1) Replace the official OpenAI provider section (Codex default) base_url
       toml = toml.replace(/(\[model_providers\.OpenAI\][\s\S]*?base_url\s*=\s*)"[^"]*"/, `$1"${proxyUrl}/v1"`);
+      // 2) Point the first provider base_url at the local proxy if none points at 127.0.0.1 yet
       if (!toml.match(/^base_url\s*=\s*"http:\/\/127\.0\.0\.1/m)) {
         toml = toml.replace(/^base_url\s*=\s*"[^"]*"/m, `base_url = "${proxyUrl}/v1"`);
+      }
+      // 3) model_provider must reference an existing [model_providers.X] section,
+      //    otherwise Codex cannot resolve the provider and fails to reach the proxy.
+      const sectionNames = [...toml.matchAll(/\[model_providers\.([^\]]+)\]/g)].map(m => m[1].trim());
+      const mpMatch = toml.match(/^model_provider\s*=\s*"([^"]*)"/m);
+      const currentMp = mpMatch ? mpMatch[1] : "";
+      if (sectionNames.length > 0) {
+        if (!currentMp || !sectionNames.includes(currentMp)) {
+          const target = sectionNames.includes(currentMp) ? currentMp : sectionNames[0];
+          if (mpMatch) {
+            toml = toml.replace(/^model_provider\s*=\s*"[^"]*"/m, `model_provider = "${target}"`);
+          } else {
+            toml = `model_provider = "${target}"\n` + toml;
+          }
+          log("info", `[Launch] Fixed Codex model_provider: "${currentMp || "(missing)"}" -> "${target}"`);
+        }
+      } else if (provider) {
+        // No provider section at all: append one pointing at the local proxy
+        const providerId = String(provider.id || "opencode").replace(/[^a-zA-Z0-9_-]/g, "") || "opencode";
+        const providerName = String(provider.name || providerId).replace(/["\\\r\n]/g, "");
+        const newSection = `\n[model_providers.${providerId}]\nname = "${providerName}"\nbase_url = "${proxyUrl}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\napi_key = "orca"\n`;
+        if (mpMatch) {
+          toml = toml.replace(/^model_provider\s*=\s*"[^"]*"/m, `model_provider = "${providerId}"`);
+        } else {
+          toml = `model_provider = "${providerId}"\n` + toml;
+        }
+        toml += newSection;
+        log("info", `[Launch] Created Codex provider section [model_providers.${providerId}]`);
+      }
+      // 4) The active provider section must NOT require OpenAI account auth,
+      //    otherwise Codex shows its login screen instead of talking to the
+      //    proxy. Also ensure it carries an api_key (the proxy ignores the
+      //    value and uses the provider's own key from Orca).
+      const mpAfter = (toml.match(/^model_provider\s*=\s*"([^"]*)"/m) || [])[1];
+      if (mpAfter && sectionNames.includes(mpAfter)) {
+        const sectionHeader = `[model_providers.${mpAfter}]`;
+        const sectionStart = toml.indexOf(sectionHeader);
+        if (sectionStart >= 0) {
+          const restStart = sectionStart + sectionHeader.length;
+          const sectionEnd = toml.indexOf("\n[", restStart);
+          const section = sectionEnd >= 0 ? toml.slice(sectionStart, sectionEnd) : toml.slice(sectionStart);
+          let fixed = section;
+          if (/requires_openai_auth\s*=\s*true/.test(fixed)) {
+            fixed = fixed.replace(/requires_openai_auth\s*=\s*true/, "requires_openai_auth = false");
+            log("info", "[Launch] Disabled requires_openai_auth for active Codex provider");
+          }
+          if (!/api_key\s*=/.test(fixed)) {
+            fixed = fixed.replace(/\s*$/, '\napi_key = "orca"');
+            log("info", "[Launch] Added api_key for active Codex provider");
+          }
+          toml = toml.slice(0, sectionStart) + fixed + toml.slice(sectionEnd >= 0 ? sectionEnd : sectionStart + section.length);
+        }
       }
       fs.writeFileSync(codexConfigPath, toml, "utf-8");
       log("info", "[Launch] Updated Codex config:", codexConfigPath);

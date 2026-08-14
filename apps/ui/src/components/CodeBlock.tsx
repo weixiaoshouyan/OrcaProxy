@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Copy, Check, WrapText, Maximize2 } from 'lucide-react';
+import type { Language } from '../i18n';
 
 // ---- Syntax Highlighting Definitions ----
 const SYNTAX_KW: Record<string, string[]> = {
@@ -70,7 +71,7 @@ function tokenizeCode(code: string, lang?: string): string {
   return html;
 }
 
-export function CodeBlock({ content, language, highlightLine }: { content: string; language?: string; highlightLine?: number }) {
+export function CodeBlock({ content, language, highlightLine, lang }: { content: string; language?: string; highlightLine?: number; lang?: Language }) {
   const [copied, setCopied] = useState(false);
   const [wrapped, setWrapped] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -106,43 +107,44 @@ export function CodeBlock({ content, language, highlightLine }: { content: strin
   const lineCount = lines.length;
   const highlighted = lineCount <= 500 ? tokenizeCode(content, language) : esc(content);
   const lineNumWidth = String(lineCount).length;
+  const isEn = lang === 'en';
 
   // 暗色/亮色模式感知 - 使用 token 而非硬编码颜色
   return (
-    <div className="my-4 border border-[var(--color-border-base)] rounded-xl overflow-hidden shadow-sm code-block-container bg-white dark:bg-slate-900 font-mono text-[13px] leading-relaxed">
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-50 dark:bg-slate-800/80 text-gray-500 dark:text-gray-400 text-xs border-b border-[var(--color-border-base)] select-none">
+    <div className="my-4 border border-[var(--color-border-base)] rounded-xl overflow-hidden shadow-[var(--shadow-xs)] code-block-container bg-[var(--color-code-bg)] font-mono text-[13px] leading-relaxed">
+      <div className="flex items-center justify-between px-4 py-2 bg-[var(--color-bg-card)]/90 text-xs border-b border-[var(--color-border-base)] select-none">
         <div className="flex items-center gap-3">
-          <span className="font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]">{language || 'code'}</span>
-          <span className="text-[10px] opacity-60">{lineCount} {lineCount === 1 ? 'line' : 'lines'}</span>
+          <span className="font-semibold uppercase tracking-wider text-[var(--color-primary)]">{language || 'code'}</span>
+          <span className="text-[10px] opacity-60 text-[var(--color-text-muted)]">{lineCount} {lineCount === 1 ? (isEn ? 'line' : '行') : (isEn ? 'lines' : '行')}</span>
         </div>
         <div className="flex items-center gap-1">
           <button
             onClick={() => setWrapped(p => !p)}
-            className={`p-1.5 rounded transition-colors ${wrapped ? 'text-[var(--color-primary)] bg-[var(--color-primary)]/10' : 'text-gray-500 dark:text-gray-400 hover:text-[var(--color-text-primary)] hover:bg-black/5 dark:hover:bg-white/5'}`}
-            title={wrapped ? '禁用自动换行' : '启用自动换行'}
+            className={`p-1.5 rounded transition-colors ${wrapped ? 'text-[var(--color-primary)] bg-[var(--color-primary)]/10' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]'}`}
+            title={wrapped ? (isEn ? 'Disable wrap' : '禁用自动换行') : (isEn ? 'Enable wrap' : '启用自动换行')}
             aria-label="Toggle wrap"
           >
             <WrapText className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setExpanded(p => !p)}
-            className="p-1.5 rounded text-gray-500 dark:text-gray-400 hover:text-[var(--color-text-primary)] hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
-            title={expanded ? '收起' : '展开'}
+            className="p-1.5 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
+            title={expanded ? (isEn ? 'Collapse' : '收起') : (isEn ? 'Expand' : '展开')}
             aria-label="Toggle expand"
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={handleCopy}
-            className="flex items-center gap-1.5 px-2 py-1 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 text-[11px] font-semibold transition-all hover:border-[var(--color-primary)] hover:text-[var(--color-primary)] dark:text-gray-300"
+            className="flex items-center gap-1.5 px-2 py-1 rounded border border-[var(--color-border-base)] bg-[var(--color-bg-hover)]/50 text-[11px] font-semibold transition-all hover:border-[var(--color-primary)]/50 hover:text-[var(--color-primary)] text-[var(--color-text-secondary)]"
             aria-label="Copy code"
           >
-            {copied ? <><Check className="w-3 h-3 text-emerald-500" /> 已复制</> : <><Copy className="w-3 h-3" /> 复制</>}
+            {copied ? <><Check className="w-3 h-3 text-emerald-500" /> {isEn ? 'Copied' : '已复制'}</> : <><Copy className="w-3 h-3" /> {isEn ? 'Copy' : '复制'}</>}
           </button>
         </div>
       </div>
       <div className={`flex overflow-x-auto ${expanded ? 'max-h-[1200px]' : 'max-h-[500px]'} transition-[max-height] duration-300`}>
-        <div className="shrink-0 select-none text-right pr-3 pl-3 py-3 bg-gray-50/60 dark:bg-slate-800/40 text-[11px] leading-relaxed text-gray-400 dark:text-gray-600 border-r border-[var(--color-border-base)] font-mono">
+        <div className="shrink-0 select-none text-right pr-3 pl-3 py-3 bg-black/20 dark:bg-white/5 text-[11px] leading-relaxed text-[var(--color-text-muted)] border-r border-[var(--color-border-base)] font-mono">
           {lines.map((_, i) => (
             <div
               key={i}
@@ -154,7 +156,7 @@ export function CodeBlock({ content, language, highlightLine }: { content: strin
           ))}
         </div>
         <div className={`py-3 px-4 flex-1 ${wrapped ? 'whitespace-pre-wrap break-all' : 'overflow-x-auto'}`}>
-          <pre className={wrapped ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} dangerouslySetInnerHTML={{ __html: highlighted }} />
+          <pre className={`text-[var(--color-code-fg)] ${wrapped ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}`} dangerouslySetInnerHTML={{ __html: highlighted }} />
         </div>
       </div>
     </div>

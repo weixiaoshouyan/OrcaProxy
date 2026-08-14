@@ -1,7 +1,22 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, shell, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, shell, dialog, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+
+// P2-16: auto-update support (electron-updater). Imported defensively — the
+// module is only present in packaged builds; in dev the require simply fails
+// and updates stay disabled. Publish target is configured in package.json
+// ("build.publish"); release uploads are done by electron-builder.
+let autoUpdater = null;
+let updateDownloaded = false;
+try {
+  const { autoUpdater: au } = require('electron-updater');
+  autoUpdater = au;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+} catch (e) {
+  console.log('[Updater] electron-updater not available (dev mode) — auto-update disabled.');
+}
 
 function isBrokenPipeError(err) {
   return err && err.code === 'EPIPE';
@@ -242,6 +257,45 @@ function startServer() {
             error: err.message
           });
         });
+      } else if (msg && msg.type === 'set-login-item') {
+        // P0-1: 开机自启动 (open at login)
+        try {
+          app.setLoginItemSettings({ openAtLogin: !!msg.enabled });
+          serverProcess.send({ type: 'set-login-item-response', requestId: msg.requestId, ok: true, enabled: !!msg.enabled });
+          console.log(`[Main] Login item ${msg.enabled ? 'enabled' : 'disabled'}`);
+        } catch (e) {
+          serverProcess.send({ type: 'set-login-item-response', requestId: msg.requestId, ok: false, error: String((e && e.message) || e) });
+        }
+      } else if (msg && msg.type === 'get-login-item-status') {
+        // P0-1: 查询开机自启动状态
+        try {
+          const settings = app.getLoginItemSettings();
+          serverProcess.send({ type: 'get-login-item-status-response', requestId: msg.requestId, enabled: !!settings.openAtLogin });
+        } catch (e) {
+          serverProcess.send({ type: 'get-login-item-status-response', requestId: msg.requestId, enabled: false, error: String((e && e.message) || e) });
+        }
+      } else if (msg && msg.type === 'show-notification') {
+        // P0-2: 任务完成/失败桌面通知（窗口隐藏时也能看到）
+        try {
+          if (Notification.isSupported()) {
+            const n = new Notification({
+              title: msg.title || 'Orca',
+              body: msg.body || '',
+              icon: getIconPath(),
+              silent: !!msg.silent
+            });
+            n.on('click', () => {
+              if (mainWindow) {
+                mainWindow.show();
+                mainWindow.focus();
+              }
+            });
+            n.show();
+          }
+          serverProcess.send({ type: 'show-notification-response', requestId: msg.requestId, ok: true });
+        } catch (e) {
+          serverProcess.send({ type: 'show-notification-response', requestId: msg.requestId, ok: false, error: String((e && e.message) || e) });
+        }
       }
     });
 
@@ -350,6 +404,32 @@ function createWindow() {
     } catch { /* ignore malformed URLs */ }
   });
 
+  // Renderer crash / OOM recovery: a dead renderer shows a blank white window.
+  // Reload it — the server keeps running, the UI restores from localStorage.
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return;
+    console.log('[Main] Renderer process gone:', details.reason, '- reloading');
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.reload();
+      }
+    }, 1000);
+  });
+
+  // Last-resort: if the renderer becomes unresponsive (e.g. heavy streaming
+  // render), give it a grace period before forcing a reload.
+  mainWindow.webContents.on('unresponsive', () => {
+    console.log('[Main] Renderer unresponsive - will reload in 15s if still hung');
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        const wc = mainWindow.webContents;
+        if (wc.isCrashed && wc.isCrashed()) {
+          mainWindow.reload();
+        }
+      }
+    }, 15000);
+  });
+
   // Minimize to tray instead of closing
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
@@ -405,6 +485,14 @@ function createTray() {
         shell.openExternal(`http://${HOST}:${PORT}?token=${LOCAL_AUTH_TOKEN}`);
       }
     },
+    // P2-16: appears only after an update has finished downloading.
+    ...(updateDownloaded && autoUpdater ? [{
+      label: '重启以更新 / Restart & Update',
+      click: () => {
+        isQuitting = true;
+        autoUpdater.quitAndInstall(false, true);
+      }
+    }] : []),
     { type: 'separator' },
     {
       label: '服务状态: 运行中',
@@ -441,6 +529,36 @@ function createTray() {
 app.whenReady().then(async () => {
   // Copy data files to userData if needed
   copyDataFiles();
+
+  // P2-16: start background update checks (packaged builds only).
+  // Also surface an "Update available" entry in the tray menu.
+  if (autoUpdater) {
+    try {
+      autoUpdater.on('update-available', (info) => {
+        console.log('[Updater] Update available:', info && info.version);
+        tray && tray.setToolTip(`Orca Universal Proxy — 新版本 ${info.version} 可用`);
+      });
+      autoUpdater.on('update-downloaded', (info) => {
+        updateDownloaded = true;
+        console.log('[Updater] Update downloaded:', info && info.version);
+        if (Notification.isSupported()) {
+          const n = new Notification({
+            title: 'Orca 新版本已就绪',
+            body: `版本 ${info.version} 已下载。点击托盘图标选择"重启以更新"，或退出应用后自动安装。`,
+            icon: getIconPath()
+          });
+          n.on('click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
+          n.show();
+        }
+      });
+      autoUpdater.on('error', (err) => {
+        console.error('[Updater] Error:', err && (err.message || err));
+      });
+      setTimeout(() => { autoUpdater.checkForUpdates().catch((e) => console.error('[Updater] check failed:', e)); }, 5000);
+    } catch (e) {
+      console.error('[Updater] init failed:', e);
+    }
+  }
 
   // Check port availability — try alternatives before failing
   let currentPort = PORT;
@@ -528,7 +646,8 @@ function copyDataFiles() {
       modelOverrides: {},
       port: 18080,
       logLevel: 'info',
-      theme: 'dark'
+      theme: 'dark',
+      healthCheckEnabled: true
     };
     fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2));
   }

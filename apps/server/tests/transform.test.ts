@@ -51,6 +51,53 @@ test("transformRequest converts max_output_tokens to max_tokens", () => {
   expect(result.max_tokens).toBe(4096);
 });
 
+test("transformRequest appends identity patch for third-party providers", () => {
+  const body: any = {
+    model: "gpt-5.6-sol",
+    instructions: "You are a coding agent.",
+    input: [{ role: "user", content: "Hello" }],
+  };
+  const provider = { id: "opencode", name: "opencode", model: "deepseek-v4-flash" };
+  const result = transformRequest(body, "deepseek-v4-flash", provider);
+  const system = result.messages.find((m: any) => m.role === "system");
+  expect(system.content).toContain("You are NOT OpenAI, GPT, Claude, or Codex");
+  expect(system.content).toContain("deepseek-v4-flash");
+  expect(system.content).toContain("You are a coding agent.");
+});
+
+test("transformRequest skips identity patch for openai provider", () => {
+  const body: any = {
+    model: "gpt-5.6-sol",
+    instructions: "You are a coding agent.",
+    input: [{ role: "user", content: "Hello" }],
+  };
+  const provider = { id: "openai", name: "OpenAI", model: "gpt-5.6-sol" };
+  const result = transformRequest(body, "gpt-5.6-sol", provider);
+  const system = result.messages.find((m: any) => m.role === "system");
+  expect(!system.content.includes("You are NOT OpenAI")).toBe(true);
+});
+
+test("transformRequest translates reasoning effort to thinking flag", () => {
+  const body: any = {
+    model: "gpt-5.6-sol",
+    input: [{ role: "user", content: "Hello" }],
+    reasoning: { effort: "xhigh" },
+  };
+  const provider = { id: "opencode", name: "opencode", model: "deepseek-v4-flash" };
+  const result: any = transformRequest(body, "deepseek-v4-flash", provider);
+  expect(result.thinking).toEqual({ type: "enabled" });
+});
+
+test("transformRequest does not set thinking without reasoning", () => {
+  const body: any = {
+    model: "gpt-5.6-sol",
+    input: [{ role: "user", content: "Hello" }],
+  };
+  const provider = { id: "opencode", name: "opencode", model: "deepseek-v4-flash" };
+  const result: any = transformRequest(body, "deepseek-v4-flash", provider);
+  expect(result.thinking === undefined).toBe(true);
+});
+
 test("createStreamState initializes correctly", () => {
   const state = createStreamState("gpt-4o");
   expect(state.model).toBe("gpt-4o");
