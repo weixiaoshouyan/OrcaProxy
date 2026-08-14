@@ -5,6 +5,34 @@ import { log } from "./helpers";
 import { executeMCPTool } from "../mcp";
 import { beginMutation, recordFilePreimage, completeMutation, discardMutation } from "./checkpoints";
 import { tryClaim, releaseClaim } from "../agent/claims";
+import { computeDiff, diffStats } from "../utils/diff";
+
+// ---- Write-diff support (Cline-style): every successful write/patch/edit
+// result carries a compact [Diff <path> +N -M] section so both the model and
+// the UI can see exactly what changed without re-reading the file. Skipped for
+// brand-new files (the whole content would just repeat) and files > 512KB.
+
+const MAX_DIFF_LINES = 120;
+
+function formatDiffSection(relPath: string, oldContent: string, newContent: string): string {
+  const stats = diffStats(oldContent, newContent);
+  if (!stats.changed) return "";
+  const diff = computeDiff(oldContent, newContent, { maxLines: MAX_DIFF_LINES });
+  return `\n\n[Diff ${relPath} +${stats.added} -${stats.removed}]\n${diff}`;
+}
+
+/** Read the pre-write content for diffing; "" + skip flag for new/large files. */
+function computeWriteDiff(relPath: string, fullPath: string, newContent: string): string {
+  try {
+    if (!fs.existsSync(fullPath)) return ""; // brand-new file — diff would repeat the content
+    const st = fs.statSync(fullPath);
+    if (!st.isFile() || st.size > 512 * 1024) return ""; // binary / too large
+    const oldContent = fs.readFileSync(fullPath, "utf-8");
+    return formatDiffSection(relPath, oldContent, newContent);
+  } catch {
+    return "";
+  }
+}
 
 // ---- Checkpoint context (threaded through the tool dispatch path) ----
 // Snapshot preimages so rewind can restore workspace state per turn.
@@ -363,10 +391,11 @@ export async function handleAgentToolCall(tc: any, workspacePath: string, cpCont
       if (!fs.existsSync(parentDir)) {
         fs.mkdirSync(parentDir, { recursive: true });
       }
+      const diffSection = computeWriteDiff(args.relativeFilePath, fullPath, args.content);
       fs.writeFileSync(fullPath, args.content, "utf-8");
       if (claimOwner) releaseClaim(claimOwner, workspacePath, args.relativeFilePath);
       if (checkpointCtx) completeMutation(tc.id, workspacePath, args.relativeFilePath, resolveSafePath);
-      return `Success: File written successfully to ${args.relativeFilePath}`;
+      return `Success: File written successfully to ${args.relativeFilePath}${diffSection}`;
     } catch (e: any) {
       if (claimOwner) releaseClaim(claimOwner, workspacePath, args.relativeFilePath);
       if (checkpointCtx) discardMutation(tc.id);
@@ -418,10 +447,11 @@ export async function handleAgentToolCall(tc: any, workspacePath: string, cpCont
         beginMutation({ toolCallId: tc.id, conversationId: checkpointCtx.conversationId, workspacePath, turn: checkpointCtx.turn });
         recordFilePreimage(tc.id, workspacePath, args.relativeFilePath, resolveSafePath);
       }
+      const diffSection = formatDiffSection(args.relativeFilePath, content, newContent);
       fs.writeFileSync(fullPath, newContent, "utf-8");
       if (claimOwner) releaseClaim(claimOwner, workspacePath, args.relativeFilePath);
       if (checkpointCtx) completeMutation(tc.id, workspacePath, args.relativeFilePath, resolveSafePath);
-      return `Success: File ${args.relativeFilePath} patched successfully.`;
+      return `Success: File ${args.relativeFilePath} patched successfully.${diffSection}`;
     } catch (e: any) {
       if (claimOwner) releaseClaim(claimOwner, workspacePath, args.relativeFilePath);
       if (checkpointCtx) discardMutation(tc.id);
@@ -480,10 +510,11 @@ export async function handleAgentToolCall(tc: any, workspacePath: string, cpCont
         beginMutation({ toolCallId: tc.id, conversationId: checkpointCtx.conversationId, workspacePath, turn: checkpointCtx.turn });
         recordFilePreimage(tc.id, workspacePath, args.relativeFilePath, resolveSafePath);
       }
+      const diffSection = formatDiffSection(args.relativeFilePath, content, work);
       fs.writeFileSync(fullPath, work, "utf-8");
       if (claimOwner) releaseClaim(claimOwner, workspacePath, args.relativeFilePath);
       if (checkpointCtx) completeMutation(tc.id, workspacePath, args.relativeFilePath, resolveSafePath);
-      return `Success: ${args.relativeFilePath} edited atomically (${edits.length} edit${edits.length > 1 ? "s" : ""}).\n${applied.join("\n")}`;
+      return `Success: ${args.relativeFilePath} edited atomically (${edits.length} edit${edits.length > 1 ? "s" : ""}).\n${applied.join("\n")}${diffSection}`;
     } catch (e: any) {
       if (claimOwner) releaseClaim(claimOwner, workspacePath, args.relativeFilePath);
       if (checkpointCtx) discardMutation(tc.id);
@@ -696,31 +727,12 @@ export async function handleAgentToolCall(tc: any, workspacePath: string, cpCont
         return `Error: content parameter is required for preview_diff.`;
       }
 
-      const currentLines = currentContent.split("\n");
-      const newLines = newContent.split("\n");
-      const diff: string[] = [];
-      const maxLen = Math.max(currentLines.length, newLines.length);
-      let changes = 0;
-
-      for (let i = 0; i < maxLen; i++) {
-        if (currentLines[i] !== newLines[i]) {
-          if (currentLines[i] !== undefined) {
-            diff.push(`-${i + 1}: ${currentLines[i]}`);
-          }
-          if (newLines[i] !== undefined) {
-            diff.push(`+${i + 1}: ${newLines[i]}`);
-          }
-          changes++;
-        }
-      }
-
-      if (changes === 0) {
+      const stats = diffStats(currentContent, newContent);
+      if (!stats.changed) {
         return `No differences found. File is identical.`;
       }
-
-      const diffOutput = diff.slice(0, 50).join("\n");
-      const truncated = diff.length > 50 ? `\n... [${diff.length - 50} more changes]` : "";
-      return `Diff Preview for "${args.relativeFilePath}" (${changes} line${changes > 1 ? "s" : ""} changed):\n\n${diffOutput}${truncated}`;
+      const diffOutput = computeDiff(currentContent, newContent, { maxLines: 80 });
+      return `Diff Preview for "${args.relativeFilePath}" (+${stats.added} -${stats.removed}):\n\n${diffOutput}`;
     } catch (e: any) {
       return `Error generating diff: ${e.message}`;
     }
@@ -758,10 +770,11 @@ export async function handleAgentToolCall(tc: any, workspacePath: string, cpCont
         }
         const parentDir = path.dirname(fullPath);
         if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
+        const diffSection = computeWriteDiff(file.relativeFilePath, fullPath, file.content);
         fs.writeFileSync(fullPath, file.content, "utf-8");
         if (claimOwner) releaseClaim(claimOwner, workspacePath, file.relativeFilePath);
         if (checkpointCtx) completeMutation(tc.id, workspacePath, file.relativeFilePath, resolveSafePath);
-        results.push(`Written: ${file.relativeFilePath}`);
+        results.push(`Written: ${file.relativeFilePath}${diffSection}`);
       } catch (e: any) {
         if (claimOwner) releaseClaim(claimOwner, workspacePath, file.relativeFilePath);
         if (checkpointCtx) discardMutation(tc.id);

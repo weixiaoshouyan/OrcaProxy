@@ -3,7 +3,15 @@ import { Zap, Key, Activity, Sparkles, BarChart2, List, Calendar, ChevronDown, F
 import { api } from '../api';
 import { translate as t } from '../i18n';
 import type { Language } from '../i18n';
-import * as echarts from 'echarts';
+// Modular ECharts imports: the full `echarts` bundle (~1MB minified) was the
+// single biggest chunk in the app (Dashboard alone shipped 1.1MB). Only line
+// and bar charts are used here, so register just those + the needed components
+// and the canvas renderer.
+import * as echarts from 'echarts/core';
+import { LineChart, BarChart } from 'echarts/charts';
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
+echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
 import { Pagination } from '../components/Pagination';
 import type { RequestStats, BillingData, BillingDayEntry, BillingTableRow } from '../types';
 
@@ -415,7 +423,7 @@ export default function Dashboard({ lang }: DashboardProps) {
 
         const series = displayMode === 'total' ? [...lineSeriesList, lineSeries] : lineSeriesList;
 
-        const option: echarts.EChartsOption = {
+        const option: echarts.EChartsCoreOption = {
           backgroundColor: 'transparent',
           tooltip: {
             trigger: 'axis',
@@ -578,7 +586,7 @@ export default function Dashboard({ lang }: DashboardProps) {
           .sort((a, b) => a.total - b.total);
 
         if (sortedModels.length > 0) {
-          const option: echarts.EChartsOption = {
+          const option: echarts.EChartsCoreOption = {
             backgroundColor: 'transparent',
             tooltip: {
               trigger: 'axis',

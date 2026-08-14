@@ -338,6 +338,22 @@ export function registerExtendedRoutes(app: express.Application): void {
     res.json({ ...state, steps, metadata: state.metadata });
   });
 
+  // Lightweight live-todo endpoint for the chat sidebar's task monitor: the
+  // full task detail carries the entire message history (up to ~800KB during
+  // long tasks) which is far too heavy to poll every few seconds. This returns
+  // only the todo list + phase the sidebar needs to render live progress.
+  app.get("/api/tasks/:taskId/todos", (req, res) => {
+    const state = loadTaskState(req.params.taskId);
+    if (!state) return res.status(404).json({ error: "Task not found" });
+    res.json({
+      taskId: state.taskId,
+      phase: state.phase,
+      goal: state.goal,
+      updatedAt: state.updatedAt,
+      todos: state.todos || [],
+    });
+  });
+
   app.delete("/api/tasks/:taskId", (req, res) => {
     deleteTaskState(req.params.taskId);
     res.json({ ok: true });

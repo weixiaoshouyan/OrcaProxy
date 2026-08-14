@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { ArrowUp, ChevronDown, ChevronRight, Sparkles, Bot, User, Trash2, FileText, X, Square, Terminal, Loader, CheckCircle, Check, CornerUpLeft, Copy, Eye, Play, Zap, PanelRightOpen, PanelRightClose, GitBranch, FolderGit2, Activity, Clock, Download, Upload, Folder, FolderOpen, Search, Paperclip, HelpCircle, PenLine, ListTodo, Settings, History, Keyboard } from 'lucide-react';
+import { ArrowUp, ChevronDown, ChevronRight, Sparkles, Bot, User, Trash2, FileText, X, Square, Terminal, Loader, CheckCircle, Check, CornerUpLeft, Copy, Eye, Play, Zap, PanelRightOpen, PanelRightClose, GitBranch, FolderGit2, Activity, Clock, Download, Upload, Folder, FolderOpen, Search, Paperclip, HelpCircle, PenLine, ListTodo, Settings, History, Keyboard, FileDiff } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { CommandPalette } from '../components/CommandPalette';
 import SettingsModal from '../components/SettingsModal';
@@ -11,7 +11,7 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import { rehypeSanitizeHardened } from '../utils/rehype-sanitize-hardened';
 import { api } from '../api';
-import { startStream, abortStream, subscribeStreams, getLive, listLive, isStreaming } from '../store/stream-store';
+import { startStream, abortStream, subscribeStreams, getLive, listLive, isStreaming, type LiveUsage } from '../store/stream-store';
 import { useToast } from '../components/Toast';
 import { translate as t } from '../i18n';
 import type { Language } from '../i18n';
@@ -172,6 +172,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
       });
       if (st.contextTokens) setContextTokens(st.contextTokens);
       if (typeof st.cacheRate === 'number') setCacheRate(st.cacheRate);
+      if (st.lastUsage) setLastUsage(st.lastUsage);
       setLoadingChats(prev => (prev[chatId] === st.loading ? prev : { ...prev, [chatId]: st.loading }));
     }, 250);
   }, []);
@@ -196,6 +197,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
       });
       if (st.contextTokens) setContextTokens(st.contextTokens);
       if (typeof st.cacheRate === 'number') setCacheRate(st.cacheRate);
+      if (st.lastUsage) setLastUsage(st.lastUsage);
       setLoadingChats(prev => (prev[s.chatId] === st.loading ? prev : { ...prev, [s.chatId]: st.loading }));
     });
     return unsub;
@@ -249,6 +251,10 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   const [skills, setSkills] = useState<any[]>([]);
   const [mcpTools, setMcpTools] = useState<any[]>([]);
   const [currentTaskList, setCurrentTaskList] = useState<{status: 'pending' | 'running' | 'completed' | 'done', description: string}[]>([]);
+  // Live Reasonix todo state (two-level plan) polled from the task monitor
+  // endpoint — the authoritative host-maintained list with level/status.
+  const [liveTodos, setLiveTodos] = useState<any[]>([]);
+  const [liveTaskPhase, setLiveTaskPhase] = useState<string>('');
   const [isTaskRunning, setIsTaskRunning] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const loadingChatsRef = useRef<Record<string, boolean>>({});
@@ -398,6 +404,8 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   }>({ branch: '—', changes: 0, untracked: 0, status: 'clean', lastCommit: '—', modifiedFiles: [] });
   const [contextTokens, setContextTokens] = useState({ used: 0, total: 0, percent: 0 });
   const [cacheRate, setCacheRate] = useState<number | null>(null);
+  // Per-task token usage from the server's final usage chunk (↑ in / ↓ out).
+  const [lastUsage, setLastUsage] = useState<LiveUsage | null>(null);
   const [showAllHistory, setShowAllHistory] = useState(false);
   const [pendingAsk, setPendingAsk] = useState<{ taskId: string; question: string; options: string[] } | null>(null);
   const [askAnswerText, setAskAnswerText] = useState('');
@@ -884,6 +892,14 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   const activeChat = conversations.find(c => c.id === activeId);
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
 
+  // Task-monitor source: the host-maintained todo list (Reasonix two-level
+  // plan, polled live) takes precedence; fall back to the legacy markdown
+  // parse for old sessions.
+  const displayTasks: any[] = liveTodos.length > 0 ? liveTodos : currentTaskList;
+  const displayDone = displayTasks.filter((t: any) => t.status === 'completed').length;
+  const displayTotal = displayTasks.length;
+  const displayProgress = displayTotal > 0 ? Math.round((displayDone / displayTotal) * 100) : 0;
+
   // Calculate context token usage from active conversation
   useEffect(() => {
     if (!activeChat) return;
@@ -1087,7 +1103,9 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeId, loadingChats, conversations, shortcutsOpen]);
 
-  // Poll for pending ask questions (agent ask_question tool)
+  // Poll for pending ask questions (agent ask_question tool) + live todos
+  // (task monitor sidebar renders the REAL todo state, not the legacy
+  // markdown-list parse).
   useEffect(() => {
     let cancelled = false;
     const poll = async () => {
@@ -1102,6 +1120,25 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
         const mostRecent = [...wsTasks].sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
         if (mostRecent?.taskId) {
           setActiveTaskId(mostRecent.taskId);
+          // Live todo monitor: poll the lightweight /todos endpoint for the
+          // active task so the sidebar tracks plan phases/sub-steps in real
+          // time (todo_write → host-advanced statuses).
+          const ACTIVE_PHASES = ['plan', 'execute', 'verify', 'replan', 'pending_approval'];
+          if (ACTIVE_PHASES.includes(mostRecent.phase)) {
+            const todoRes = await api.get(`/api/tasks/${mostRecent.taskId}/todos`);
+            const todos = todoRes.data?.todos;
+            if (!cancelled) {
+              setLiveTodos(Array.isArray(todos) ? todos : []);
+              setLiveTaskPhase(String(todoRes.data?.phase || mostRecent.phase));
+            }
+          } else if (!cancelled) {
+            // Finished task: keep the last known todo state (sidebar stays
+            // informative), but clear it when nothing recent exists.
+            setLiveTodos(prev => prev);
+          }
+        } else if (!cancelled) {
+          setActiveTaskId(null);
+          setLiveTodos([]);
         }
         const withAsk = list.find((t: any) => t.phase === 'pending_approval');
         if (withAsk) {
@@ -1423,6 +1460,17 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
       return;
     }
 
+    // Live todo monitor (host-maintained two-level plan) takes precedence over
+    // the legacy markdown parse. Running = unfinished items AND the task is in
+    // an active phase (a finished task keeps its completed list visible but is
+    // not "running").
+    if (liveTodos.length > 0) {
+      const hasUnfinished = liveTodos.some((t: any) => t.status !== 'completed');
+      const activePhases = ['plan', 'execute', 'verify', 'replan', 'pending_approval', 'awaiting_user'];
+      setIsTaskRunning(hasUnfinished && activePhases.includes(liveTaskPhase));
+      return;
+    }
+
     // Find the latest assistant message
     const assistantMessages = activeChat.messages.filter(m => m.role === 'assistant');
     if (assistantMessages.length === 0) {
@@ -1446,7 +1494,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
         setIsTaskRunning(false);
       }
     }
-  }, [conversations, activeId, useAgent]);
+  }, [conversations, activeId, useAgent, liveTodos, liveTaskPhase]);
 
   const handleSend = async () => {
     const chatId = activeId;
@@ -2029,6 +2077,14 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
                       <span className="truncate max-w-[150px]">{displayModelLabel(models, (activeChat as any).model)}</span>
                       <span>·</span>
                       <span>{msg.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      {lastUsage && msg.role === 'assistant' && (
+                        <span
+                          className="ml-1 px-1.5 py-0.5 rounded bg-[var(--color-bg-hover)] border border-[var(--color-border-base)] font-mono text-[10px] text-[var(--color-text-muted)]"
+                          title={`${lang === 'en' ? 'Tokens' : 'Token 消耗'}: ↑ ${lastUsage.prompt.toLocaleString()} in${lastUsage.cached > 0 ? ` (${lastUsage.cached.toLocaleString()} cached)` : ''} / ↓ ${lastUsage.completion.toLocaleString()} out`}
+                        >
+                          ↑{lastUsage.prompt.toLocaleString()} ↓{lastUsage.completion.toLocaleString()}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 text-gray-400 dark:text-gray-500">
                       <button 
@@ -2703,11 +2759,11 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
               >
                 <Activity className="w-3 h-3" />
                 <span>{lang === 'en' ? 'Tasks' : '任务'}</span>
-                {currentTaskList.length > 0 && (
+                {displayTotal > 0 && (
                   <span className={`text-[10px] font-bold px-1 rounded ${
                     isTaskRunning ? 'bg-blue-500 text-white' : 'bg-emerald-500 text-white'
                   }`}>
-                    {currentTaskList.filter(t => t.status === 'completed').length}/{currentTaskList.length}
+                    {displayDone}/{displayTotal}
                   </span>
                 )}
               </button>
@@ -2758,7 +2814,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
             {/* Tasks Tab */}
             {rightSidebarTab === 'tasks' && (
               <div className="space-y-3">
-                {currentTaskList.length === 0 ? (
+                {displayTotal === 0 ? (
                   <div className="flex flex-col items-center justify-center h-[200px] text-center px-4">
                     <Activity className="w-10 h-10 text-[var(--color-text-muted)] mb-3 opacity-40" />
                     <p className="text-xs text-[var(--color-text-muted)]">
@@ -2773,57 +2829,64 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
                     <div className="space-y-1">
                       <div className="flex items-center justify-between text-[10px] text-[var(--color-text-muted)]">
                         <span>{lang === 'en' ? 'Overall Progress' : '总体进度'}</span>
-                        <span className="font-mono">
-                          {Math.round(currentTaskList.length > 0
-                            ? (currentTaskList.filter(t => t.status === 'completed').length / currentTaskList.length) * 100
-                            : 0)}%
-                        </span>
+                        {liveTaskPhase && (
+                          <span className="font-mono uppercase tracking-wider text-[var(--color-primary)]">{liveTaskPhase}</span>
+                        )}
+                        <span className="font-mono">{displayProgress}%</span>
                       </div>
                       <div className="w-full h-2 bg-[var(--color-bg-hover)] rounded-full overflow-hidden">
                         <div
-                          className={`orca-progress-bar h-full rounded-full transition-all duration-700`}
-                          style={{
-                            width: `${currentTaskList.length > 0
-                              ? (currentTaskList.filter(t => t.status === 'completed').length / currentTaskList.length) * 100
-                              : 0}%`
-                          }}
+                          className="orca-progress-bar h-full rounded-full transition-all duration-700"
+                          style={{ width: `${displayProgress}%` }}
                         />
                       </div>
                     </div>
 
-                    {/* Task Items */}
+                    {/* Task Items — two-level plan: phases (level 0) with
+                        indented sub-steps (level 1) */}
                     <div className="space-y-0.5">
-                      {currentTaskList.map((task, idx) => (
-                        <div
-                          key={idx}
-                          className={`flex items-start gap-2.5 p-2 rounded-lg text-xs transition-colors ${
-                            task.status === 'running'
-                              ? 'bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30'
-                              : 'hover:bg-[var(--color-bg-hover)]'
-                          }`}
-                        >
-                          <div className="mt-0.5 shrink-0">
-                            {task.status === 'completed' && (
-                              <CheckCircle className="w-4 h-4 text-emerald-500" />
-                            )}
-                            {task.status === 'running' && (
-                              <Loader className="w-4 h-4 text-blue-500 animate-spin" />
-                            )}
-                            {task.status === 'pending' && (
-                              <Clock className="w-4 h-4 text-gray-400" />
-                            )}
+                      {displayTasks.map((task: any, idx: number) => {
+                        const isPhase = task.level === 0;
+                        const isSub = task.level === 1;
+                        const status = task.status || 'pending';
+                        const isCurrent = status === 'in_progress';
+                        const label = isCurrent && task.activeForm ? task.activeForm : task.content;
+                        return (
+                          <div
+                            key={`${isPhase ? 'p' : 's'}-${idx}`}
+                            className={`flex items-start gap-2.5 p-2 rounded-lg text-xs transition-colors ${
+                              isSub ? 'ml-4' : ''
+                            } ${
+                              isCurrent
+                                ? 'bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30'
+                                : 'hover:bg-[var(--color-bg-hover)]'
+                            }`}
+                          >
+                            <div className="mt-0.5 shrink-0">
+                              {status === 'completed' && (
+                                <CheckCircle className="w-4 h-4 text-emerald-500" />
+                              )}
+                              {isCurrent && (
+                                <Loader className="w-4 h-4 text-blue-500 animate-spin" />
+                              )}
+                              {status === 'pending' && (
+                                <Clock className={`w-4 h-4 ${isPhase ? 'text-[var(--color-text-muted)]' : 'text-gray-400'}`} />
+                              )}
+                            </div>
+                            <span className={`flex-1 leading-relaxed ${
+                              isPhase ? 'font-bold text-[var(--color-text-primary)]' : ''
+                            } ${
+                              status === 'completed'
+                                ? 'text-[var(--color-text-muted)] line-through'
+                                : isCurrent
+                                  ? 'text-blue-700 dark:text-blue-300 font-semibold'
+                                  : 'text-[var(--color-text-secondary)]'
+                            }`}>
+                              {label}
+                            </span>
                           </div>
-                          <span className={`flex-1 leading-relaxed ${
-                            task.status === 'completed'
-                              ? 'text-[var(--color-text-muted)] line-through'
-                              : task.status === 'running'
-                                ? 'text-blue-700 dark:text-blue-300 font-semibold'
-                                : 'text-[var(--color-text-secondary)]'
-                          }`}>
-                            {task.description}
-                          </span>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </>
                 )}
@@ -3752,6 +3815,14 @@ function TaskListWidget({ tasks, lang }: { tasks: TaskItem[]; lang: Language }) 
   );
 }
 
+/** Parse the structured [Diff <path> +N -M] section the server appends to
+ *  write/patch/edit tool results. Returns null when absent. */
+function parseDiffSection(content: string): { path: string; added: number; removed: number; body: string; startIndex: number } | null {
+  const m = content.match(/\n\n\[Diff\s+(.+?)\s+\+(\d+)\s+-(\d+)\]\n([\s\S]*)$/);
+  if (!m) return null;
+  return { path: m[1], added: parseInt(m[2], 10), removed: parseInt(m[3], 10), body: m[4], startIndex: m.index ?? 0 };
+}
+
 function renderDiffContent(content: string, isRunning: boolean, lang: Language) {
   if (!content) {
     return <span className="text-slate-500 italic">{isRunning
@@ -3761,7 +3832,7 @@ function renderDiffContent(content: string, isRunning: boolean, lang: Language) 
 
   const lines = content.split('\n');
   const hasDiffIndicators = lines.some(l => l.startsWith('+') || l.startsWith('-') || l.startsWith('@@'));
-  
+
   if (!hasDiffIndicators) {
     return <span className="text-[#a6e3a1] whitespace-pre">{content}</span>;
   }
@@ -3771,8 +3842,11 @@ function renderDiffContent(content: string, isRunning: boolean, lang: Language) 
       {lines.map((line, idx) => {
         let className = "text-slate-300 pl-2";
         let bgStyle = "";
-        
-        if (line.startsWith('+')) {
+
+        if (line.startsWith('+++') || line.startsWith('---')) {
+          className = "text-[#89b4fa] font-bold";
+          bgStyle = "bg-[#89b4fa]/5 pl-1.5";
+        } else if (line.startsWith('+')) {
           className = "text-[#a6e3a1] font-semibold";
           bgStyle = "bg-emerald-500/10 border-l-2 border-emerald-500 pl-1.5";
         } else if (line.startsWith('-')) {
@@ -3782,7 +3856,7 @@ function renderDiffContent(content: string, isRunning: boolean, lang: Language) 
           className = "text-[#89b4fa] font-bold";
           bgStyle = "bg-[#89b4fa]/5 pl-1.5";
         }
-        
+
         return (
           <div key={idx} className={`${bgStyle} min-h-[18px] py-0.5 whitespace-pre-wrap select-text`}>
             <span className={className}>{line}</span>
@@ -3844,6 +3918,13 @@ function ToolExecutionBlock({ block, lang, onFileOp }: { block: any; lang: Langu
 
   const timeStr = elapsed > 0 ? `${elapsed}s` : '';
   const durationStr = block.duration || timeStr;
+  const diffSection = parseDiffSection(content);
+  const mainContent = diffSection ? content.slice(0, diffSection.startIndex).trimEnd() : '';
+
+  const copyOutput = () => {
+    if (!content) return;
+    navigator.clipboard?.writeText(content).catch(() => { /* ignore */ });
+  };
 
   return (
     <div className={`flex items-start gap-2.5 py-1.5 px-1 group ${isError ? 'text-red-500/90' : 'text-[var(--color-text-secondary)]'}`}>
@@ -3854,6 +3935,13 @@ function ToolExecutionBlock({ block, lang, onFileOp }: { block: any; lang: Langu
           {block.label && (
             <span className="truncate max-w-[55%] font-mono text-[11px] text-[var(--color-text-muted)]">{block.label}</span>
           )}
+          {diffSection && !isRunning && (
+            <span className="flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--color-bg-hover)] border border-[var(--color-border-base)]" title={diffSection.path}>
+              <FileDiff className="w-3 h-3 text-[var(--color-text-muted)]" />
+              <span className="text-emerald-400">+{diffSection.added}</span>
+              <span className="text-red-400">−{diffSection.removed}</span>
+            </span>
+          )}
           <span className="text-[10px] text-[var(--color-text-muted)]">
             {isRunning
               ? (lang === 'en' ? 'running…' : '执行中…')
@@ -3862,18 +3950,42 @@ function ToolExecutionBlock({ block, lang, onFileOp }: { block: any; lang: Langu
                 : durationStr}
           </span>
           {!isRunning && content && (
-            <button
-              onClick={() => setIsExpanded(!isExpanded)}
-              className="text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors cursor-pointer"
-            >
-              {isExpanded ? (lang === 'en' ? 'hide' : '收起') : (lang === 'en' ? 'output' : '输出')}
-            </button>
+            <span className="flex items-center gap-1.5">
+              <button
+                onClick={copyOutput}
+                className="opacity-0 group-hover:opacity-100 text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-all cursor-pointer"
+                title={lang === 'en' ? 'Copy output' : '复制输出'}
+              >
+                <Copy className="w-3 h-3" />
+              </button>
+              <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors cursor-pointer"
+              >
+                {isExpanded ? (lang === 'en' ? 'hide' : '收起') : (lang === 'en' ? 'output' : '输出')}
+              </button>
+            </span>
           )}
         </div>
         {isExpanded && content && (
-          <pre className="mt-1.5 text-[11px] font-mono leading-relaxed text-[var(--color-text-secondary)] bg-[var(--color-bg-sidebar)] rounded-lg p-2.5 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap select-text">
-            {renderDiffContent(content, false, lang)}
-          </pre>
+          <div className="mt-1.5 text-[11px] font-mono leading-relaxed text-[var(--color-text-secondary)] bg-[var(--color-bg-sidebar)] rounded-lg p-2.5 overflow-x-auto max-h-72 overflow-y-auto select-text">
+            {diffSection ? (
+              <>
+                {mainContent && (
+                  <pre className="whitespace-pre-wrap mb-2 text-[var(--color-text-secondary)]">{mainContent}</pre>
+                )}
+                <div className="flex items-center gap-1.5 text-[10px] text-[var(--color-text-muted)] mb-1.5 select-none">
+                  <FileDiff className="w-3 h-3" />
+                  <span className="font-mono truncate">{diffSection.path}</span>
+                  <span className="text-emerald-400">+{diffSection.added}</span>
+                  <span className="text-red-400">−{diffSection.removed}</span>
+                </div>
+                {renderDiffContent(diffSection.body, false, lang)}
+              </>
+            ) : (
+              <pre className="whitespace-pre-wrap">{renderDiffContent(content, false, lang)}</pre>
+            )}
+          </div>
         )}
       </div>
     </div>

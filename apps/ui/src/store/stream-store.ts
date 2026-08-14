@@ -17,6 +17,13 @@ export interface LiveContextTokens {
   percent: number;
 }
 
+/** Per-task token usage reported by the server's final usage chunk. */
+export interface LiveUsage {
+  prompt: number;
+  completion: number;
+  cached: number;
+}
+
 export interface LiveStream {
   chatId: string;
   assistantIndex: number;
@@ -38,6 +45,7 @@ export interface LiveStream {
   contextLimit: number;
   contextTokens?: LiveContextTokens;
   cacheRate?: number;
+  lastUsage?: LiveUsage;
   lastPersist: number;
 }
 
@@ -210,6 +218,11 @@ async function runFetch(st: LiveStream): Promise<void> {
             ?? parsed.usage.input_token_details?.cache_read
             ?? 0;
           if (used > 0) st.cacheRate = Math.round((cached / used) * 100);
+          // Final usage chunk → per-task token badge (↑ in / ↓ out).
+          const completion = parsed.usage.completion_tokens || parsed.usage.output_tokens || 0;
+          if (used > 0 || completion > 0) {
+            st.lastUsage = { prompt: used, completion, cached };
+          }
         }
         if (delta) {
           st.buffer += delta;
