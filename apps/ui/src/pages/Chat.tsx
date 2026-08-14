@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { ArrowUp, ChevronDown, ChevronRight, Sparkles, Bot, User, Trash2, FileText, X, Square, Terminal, Loader, CheckCircle, Check, CornerUpLeft, Copy, Eye, Play, Zap, PanelRightOpen, PanelRightClose, GitBranch, FolderGit2, Activity, Clock, Download, Upload, Folder, FolderOpen, Search, Paperclip, HelpCircle, PenLine, ListTodo, Settings, History, Keyboard, FileDiff } from 'lucide-react';
+import { ArrowUp, ChevronDown, ChevronRight, Sparkles, Bot, User, Trash2, FileText, X, Square, Terminal, Loader, CheckCircle, Check, CornerUpLeft, Copy, Eye, Play, Zap, PanelRightOpen, PanelRightClose, GitBranch, FolderGit2, Activity, Clock, Download, Upload, Folder, FolderOpen, Search, Paperclip, HelpCircle, PenLine, ListTodo, Settings, History, Keyboard, FileDiff, Info, AlertTriangle, AlertCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { CommandPalette } from '../components/CommandPalette';
 import SettingsModal from '../components/SettingsModal';
@@ -1931,7 +1931,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
           {(!activeChat || activeChat.messages.filter(msg => msg.role !== 'system').length === 0) && (
             <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-center px-4 select-none">
               <div className="orca-hero-aura mb-4">
-                <div className="orca-gradient-tile w-16 h-16 rounded-2xl flex items-center justify-center">
+                <div className="orca-gradient-tile orca-sonar w-16 h-16 rounded-[22px] flex items-center justify-center">
                   <Bot className="w-8 h-8 text-white" />
                 </div>
               </div>
@@ -2056,7 +2056,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
                   <div className={`p-4 rounded-2xl text-[14px] leading-relaxed ${
                     msg.role === 'user'
                       ? 'bg-[var(--color-primary)] text-white rounded-tr-md shadow-[var(--shadow-primary)] whitespace-pre-wrap'
-                      : 'bg-[var(--color-bg-card)] border border-[var(--color-border-base)] text-[var(--color-text-primary)] rounded-tl-md shadow-[var(--shadow-xs)]'
+                      : 'orca-bubble text-[var(--color-text-primary)] rounded-tl-md'
                   }`}>
                     {msg.role === 'user' ? (
                       cleanThinkTags(msg.content)
@@ -2183,7 +2183,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
         <div className="shrink-0 flex flex-col gap-3">
           
           {/* Todo shelf — live task summary pinned above the composer (Reasonix PromptShelf-style) */}
-          {useAgent && currentTaskList.length > 0 && (
+          {useAgent && displayTotal > 0 && (
             <div className="border border-[var(--color-border-base)] rounded-xl bg-[var(--color-bg-card)] shadow-[var(--shadow-xs)] overflow-hidden">
               <div className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-[var(--color-bg-hover)]/40 transition-colors"
                 onClick={() => setTodoShelfCollapsed(v => !v)}
@@ -2193,12 +2193,12 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
                   {lang === 'en' ? 'Tasks' : '任务'}
                 </span>
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--color-primary)]/10 text-[var(--color-primary)] font-bold">
-                  {currentTaskList.filter(t => t.status === 'completed').length}/{currentTaskList.length}
+                  {displayDone}/{displayTotal}
                 </span>
                 <span className="flex-1 min-w-0">
                   {(() => {
-                    const running = currentTaskList.find(t => t.status === 'running');
-                    if (running) return <span className="text-[11px] text-[var(--color-text-secondary)] truncate">⏳ {running.description}</span>;
+                    const running = displayTasks.find(t => t.status === 'in_progress' || t.status === 'running');
+                    if (running) return <span className="text-[11px] text-[var(--color-text-secondary)] truncate">⏳ {running.activeForm || running.content || running.description}</span>;
                     if (isTaskRunning) return <span className="text-[11px] text-[var(--color-text-muted)] truncate">{lang === 'en' ? 'Running...' : '执行中...'}</span>;
                     return <span className="text-[11px] text-[var(--color-text-muted)] truncate">{lang === 'en' ? 'All done' : '全部完成'}</span>;
                   })()}
@@ -2207,19 +2207,24 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
               </div>
               {!todoShelfCollapsed && (
                 <div className="px-3 pb-2 max-h-36 overflow-y-auto space-y-0.5 border-t border-[var(--color-border-base)]/60 pt-1.5">
-                  {currentTaskList.slice(0, 8).map((task, idx) => (
-                    <div key={idx} className="flex items-center gap-2 py-0.5">
-                      {task.status === 'completed' && <CheckCircle className="w-3 h-3 text-emerald-500 shrink-0" />}
-                      {task.status === 'running' && <Loader className="w-3 h-3 text-[var(--color-primary)] animate-spin shrink-0" />}
-                      {task.status === 'pending' && <Clock className="w-3 h-3 text-[var(--color-text-muted)] opacity-50 shrink-0" />}
-                      <span className={`text-[11px] truncate ${task.status === 'completed' ? 'text-[var(--color-text-muted)] line-through opacity-70' : task.status === 'running' ? 'text-[var(--color-text-primary)] font-semibold' : 'text-[var(--color-text-secondary)]'}`}>
-                        {task.description}
-                      </span>
-                    </div>
-                  ))}
-                  {currentTaskList.length > 8 && (
+                  {displayTasks.slice(0, 8).map((task, idx) => {
+                    const status = task.status || 'pending';
+                    const isSub = task.level === 1;
+                    const label = status === 'in_progress' && task.activeForm ? task.activeForm : (task.content || task.description);
+                    return (
+                      <div key={idx} className={`flex items-center gap-2 py-0.5 ${isSub ? 'pl-4' : ''}`}>
+                        {status === 'completed' && <CheckCircle className="w-3 h-3 text-emerald-500 shrink-0" />}
+                        {status === 'in_progress' && <Loader className="w-3 h-3 text-[var(--color-primary)] animate-spin shrink-0" />}
+                        {status === 'pending' && <Clock className="w-3 h-3 text-[var(--color-text-muted)] opacity-50 shrink-0" />}
+                        <span className={`text-[11px] truncate ${status === 'completed' ? 'text-[var(--color-text-muted)] line-through opacity-70' : status === 'in_progress' ? 'text-[var(--color-text-primary)] font-semibold' : isSub ? 'text-[var(--color-text-muted)]' : 'text-[var(--color-text-secondary)] font-semibold'}`}>
+                          {label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {displayTotal > 8 && (
                     <div className="text-[10px] text-[var(--color-text-muted)] text-center pt-0.5 opacity-60">
-                      +{currentTaskList.length - 8} {lang === 'en' ? 'more' : '更多'}
+                      +{displayTotal - 8} {lang === 'en' ? 'more' : '更多'}
                     </div>
                   )}
                 </div>
@@ -3278,7 +3283,8 @@ type AgentActivityBlock =
   | { type: 'text'; content: string }
   | { type: 'tool'; content: string; toolName?: string; label?: string; status?: 'done' | 'running' | 'error'; duration?: string }
   | { type: 'think'; content: string; status?: 'done' | 'running' }
-  | { type: 'todos'; content: string };
+  | { type: 'todos'; content: string }
+  | { type: 'notice'; content: string; severity: 'info' | 'warning' | 'error' };
 
 // Per-tool announcement: `> 🔧 **Agent Executing Tool:** \`name\` — label...`
 // (backtick matched via \x60 to avoid literal template-literal chars in the regex)
@@ -3286,6 +3292,15 @@ const ANNO_LINE_RE = /^\s*>\s+[^\n]*?\*\*Agent Executing[^:*]*:\*\*\s+\x60([^\x6
 const TODOS_LINE_RE = /^\s*>\s+📋\s+Todos\s+\[\d+\/\d+\]/;
 const DURATION_SUFFIX_RE = /^\((\d+(?:\.\d+)?)s\)\s*$/;
 const CODE_BLOCK_SPLIT_RE = /(```[\s\S]*?```)/g;
+
+// Host/system notices → styled cards: stall guards, approval waits, turn
+// refusals, hard stops, ask questions, stream errors.
+const NOTICE_RULES: { re: RegExp; severity: 'info' | 'warning' | 'error' }[] = [
+  { re: /^\s*\[Guard\]|^\s*> ⚠️/, severity: 'warning' },
+  { re: /^\s*> 🛑|^\s*\[Agent Stream Error\]/, severity: 'error' },
+  { re: /^\s*\[Waiting for|^\s*\[Continuing:|^\s*> ❓|^\s*\[Orca/, severity: 'info' },
+  { re: /^\s*\[Turn refused/, severity: 'warning' },
+];
 
 function parseAssistantMessage(content: string): AgentActivityBlock[] {
   const parts: AgentActivityBlock[] = [];
@@ -3373,6 +3388,13 @@ function parseToolsAndText(content: string): AgentActivityBlock[] {
       if (TODOS_LINE_RE.test(line)) {
         flushText();
         parts.push({ type: 'todos', content: line.trim() });
+        lastWasTool = false;
+        continue;
+      }
+      const noticeRule = NOTICE_RULES.find((r) => r.re.test(line));
+      if (noticeRule) {
+        flushText();
+        parts.push({ type: 'notice', content: line.trim(), severity: noticeRule.severity });
         lastWasTool = false;
         continue;
       }
@@ -3992,6 +4014,46 @@ function ToolExecutionBlock({ block, lang, onFileOp }: { block: any; lang: Langu
   );
 }
 
+/** Host/system notice card — stall guards, approval waits, hard stops, turn
+ *  refusals and ask questions render as distinct status cards instead of
+ *  blending into the transcript as plain text. */
+function NoticeCard({ content, severity, lang }: { content: string; severity: 'info' | 'warning' | 'error'; lang: Language }) {
+  const styles = {
+    info: {
+      border: 'border-sky-500/30',
+      bg: 'bg-sky-500/[0.06]',
+      icon: <Info className="w-4 h-4 text-sky-500 shrink-0" />,
+      label: lang === 'en' ? 'Notice' : '提示',
+    },
+    warning: {
+      border: 'border-amber-500/30',
+      bg: 'bg-amber-500/[0.06]',
+      icon: <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />,
+      label: lang === 'en' ? 'Attention' : '注意',
+    },
+    error: {
+      border: 'border-red-500/30',
+      bg: 'bg-red-500/[0.06]',
+      icon: <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />,
+      label: lang === 'en' ? 'Error' : '错误',
+    },
+  }[severity];
+
+  // Strip the leading bracket marker so the card reads naturally:
+  // "[Guard] 任务已暂停…" → body without "[Guard]".
+  const body = content.replace(/^\s*>\s*/, '').replace(/^\s*\[(?:Guard|Waiting for|Continuing|Turn refused|Agent Stream Error|Orca)[^\]]*\]\s*/, '').trim();
+
+  return (
+    <div className={`flex items-start gap-2.5 px-3 py-2.5 rounded-xl border ${styles.border} ${styles.bg} my-1`}>
+      {styles.icon}
+      <div className="flex-1 min-w-0">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-0.5">{styles.label}</div>
+        <div className="text-xs leading-relaxed text-[var(--color-text-secondary)] whitespace-pre-wrap break-words">{body || content}</div>
+      </div>
+    </div>
+  );
+}
+
 // MEMOIZED ASSISTANT MESSAGE COMPONENTS TO PREVENT UI CRASH
 interface AssistantMessageProps {
   content: string;
@@ -4041,6 +4103,9 @@ const AssistantMessageContent = ({ content, lang, onFileOp }: AssistantMessagePr
         }
         if (block.type === 'todos') {
           return <TodosRow key={key} content={block.content} lang={lang} />;
+        }
+        if (block.type === 'notice') {
+          return <NoticeCard key={key} content={block.content} severity={block.severity} lang={lang} />;
         }
         return <ToolExecutionBlock key={key} block={block} lang={lang} onFileOp={onFileOp} />;
       })}

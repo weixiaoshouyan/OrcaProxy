@@ -214,6 +214,9 @@ export async function runAgentTask(
     }
 
     // Todo-stall guard: track consecutive rounds with no plan progress.
+    // A task "stalls" when the model keeps calling tools but the host-managed
+    // todo list never changes (no todo_write / complete_step). Typical cause:
+    // the model explores/retries tools without ever establishing a plan.
     if (taskState) {
       const stallSignature = (taskState.todos ?? []).map((t) => `${t.content}:${t.status}`).join("|");
       if (round > 0 && taskState.metadata.lastStallSignature !== undefined) {
@@ -221,25 +224,58 @@ export async function runAgentTask(
         const stallCounter = (taskState.metadata.todoStallCounter as number) || 0;
         const nextCounter = progressed ? 0 : stallCounter + 1;
         taskState.metadata.todoStallCounter = nextCounter;
+        const noTodos = !Array.isArray(taskState.todos) || taskState.todos.length === 0;
+
+        // Early, explicit nudge when the model runs tools without ANY plan —
+        // the common stall pattern. Give it a direct instruction instead of a
+        // generic "make progress" hint it can ignore.
+        if (!progressed && nextCounter >= 4 && noTodos && nextCounter < 8) {
+          const planNudge =
+            "[Guard] 注意：你已经在没有任务列表的情况下执行了多轮工具。立即调用 todo_write 建立双层计划（编号阶段 + 缩进子步骤），之后每轮用 todo_write 更新状态、用 complete_step 签收完成步骤。未建立计划前不要再继续调用其他工具。";
+          messages.push({ role: "system" as const, content: planNudge });
+          log("warn", `[Guard] ${planNudge.slice(0, 80)}…`);
+        }
+
         if (!progressed && nextCounter >= 16) {
-          const pauseNote = "[Guard] No plan progress for 16 rounds. Pausing execution to avoid a loop — progress was saved; reconsider the approach or resume.";
+          // Collect the tool calls from recent rounds so the pause report
+          // explains WHAT the agent was doing, not just that it stalled.
+          const toolNames: string[] = [];
+          for (let i = messages.length - 1; i >= 0 && toolNames.length < 6; i--) {
+            const m = messages[i];
+            if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
+              for (const tc of m.tool_calls) {
+                const name = tc?.function?.name;
+                if (name && !toolNames.includes(name)) toolNames.push(name);
+              }
+            }
+          }
+          const toolsText = toolNames.length
+            ? `最近工具调用: ${toolNames.join(", ")}`
+            : "最近没有工具调用";
+          const pauseNote =
+            `[Guard] 任务已暂停：连续 ${nextCounter} 轮任务列表没有进展。${toolsText}。` +
+            `可能原因：模型一直在调用工具但没有更新计划（todo_write / complete_step）。` +
+            `进度已保存——在「任务」页点击恢复即可继续，恢复后模型会收到本原因并重新制定计划。` +
+            ` (no plan progress for ${nextCounter} rounds; resume from the Tasks page)`;
           log("warn", `[Guard] ${pauseNote}`);
           broadcast("task_error", taskState.taskId, { error: pauseNote });
           taskState.phase = "replan";
           taskState.metadata.replanReason = pauseNote;
           taskState.messages = messages;
           saveTaskState(taskState);
-          const pauseChunk = mkChunk(null, resolved.model, `\n\n[${pauseNote}]\n`, "error");
+          const pauseChunk = mkChunk(null, resolved.model, `\n\n${pauseNote}\n`, "error");
           safeWrite(res, "data: " + JSON.stringify(pauseChunk) + "\n\n");
           safeWrite(res, "data: [DONE]\n\n");
           if (!res.writableEnded) { try { res.end(); } catch { /* already closed */ } }
           return;
         }
         if (!progressed && nextCounter >= 8) {
-          const nudgeNote = `[Guard] No plan progress for ${nextCounter} rounds. Ensure each next step makes concrete progress or complete the task.`;
+          const nudgeNote = noTodos
+            ? "[Guard] 任务列表仍为空。停止探索工具，立即调用 todo_write 建立双层计划（阶段 + 缩进子步骤），否则任务将在数轮后被暂停。"
+            : `[Guard] 已连续 ${nextCounter} 轮没有计划进展：请确保每一步都推进任务（todo_write 更新状态 / complete_step 签收），或完成剩余步骤。`;
           taskState.metadata.replanReason = nudgeNote;
           messages.push({ role: "system" as const, content: nudgeNote });
-          log("warn", `[Guard] ${nudgeNote}`);
+          log("warn", `[Guard] ${nudgeNote.slice(0, 100)}…`);
         }
       }
       taskState.metadata.lastStallSignature = stallSignature;

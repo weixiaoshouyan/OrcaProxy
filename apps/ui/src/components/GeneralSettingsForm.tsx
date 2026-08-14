@@ -140,6 +140,7 @@ export default function GeneralSettingsForm({ config, setConfig, lang, isDark, t
         </div>
         <div className="flex items-center gap-1.5 mb-4">
           {[
+            { id: 'orca', cls: 'bg-teal-500' },
             { id: 'green', cls: 'bg-green-500' },
             { id: 'blue', cls: 'bg-blue-500' },
             { id: 'purple', cls: 'bg-purple-500' },
@@ -161,7 +162,7 @@ export default function GeneralSettingsForm({ config, setConfig, lang, isDark, t
         </div>
         <div className="grid grid-cols-2 gap-1.5 max-w-md">
           {[
-            { id: 'classic', label: lang === 'en' ? 'Classic' : '经典' },
+            { id: 'classic', label: lang === 'en' ? 'Abyssal' : '深渊（默认）' },
             { id: 'dracula', label: 'Dracula' },
             { id: 'nord', label: 'Nord' },
             { id: 'catppuccin', label: 'Catppuccin' },

@@ -65,10 +65,10 @@ function AppContent({
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <div className="flex items-center gap-2.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-          <span className="orca-gradient-tile w-[22px] h-[22px] rounded-[6px] flex items-center justify-center text-white shrink-0">
+          <span className="orca-gradient-tile orca-sonar w-[22px] h-[22px] rounded-[7px] flex items-center justify-center text-white shrink-0">
             <Box className="w-3.5 h-3.5" />
           </span>
-          <span className="text-[13px] font-extrabold tracking-tight text-[var(--color-text-primary)]">
+          <span className="orca-wordmark text-[13px] font-extrabold tracking-tight">
             Orca
             <span className="ml-1.5 text-[9px] font-semibold uppercase tracking-widest text-[var(--color-text-muted)] bg-[var(--color-bg-hover)] px-1.5 py-0.5 rounded border border-[var(--color-border-base)]">
               {lang === 'en' ? 'Agent' : '智能代理'}
@@ -184,7 +184,7 @@ function App() {
   const [lang, setLang] = useState<Language>(getLanguage);
 
   const [accent, setAccent] = useState(() => {
-    return localStorage.getItem('orca_accent') || 'green';
+    return localStorage.getItem('orca_accent') || 'orca';
   });
 
   const [theme, setTheme] = useState(() => {

@@ -523,6 +523,14 @@ export function buildAgentPrompt(
 - Git: git_status / git_diff / git_commit / git_log; commit logical units with conventional messages (feat:, fix:, chore:, docs:, refactor:, test:).
 - Quality: after changing code, run the project's own checks (run_tests / run_lint_check / build) and fix failures before signing off.
 ${getSkillsSystemPrompt()}`);
+    parts.push(`[Windows 终端指引]
+- run_terminal_command 在 Windows 上通过 PowerShell 执行。
+- 多行或含引号/特殊字符的命令（尤其是 python -c "多行代码"）会被 PowerShell 引号解析破坏而失败。规范做法：先用 write_workspace_file 将脚本写入临时 .py/.ps1 文件，再执行 python 脚本路径 或 powershell -ExecutionPolicy Bypass -File 脚本路径，执行后删除临时脚本。
+- 单行简单命令（git status、npm test 等）可直接执行。
+- 命令失败时先分析错误输出（引号？路径？语法？）再修正，不要原样重试同一命令。`);
+    parts.push(`[任务列表纪律]
+- 在第一次工具调用之后、探索 1-2 轮之内，必须用 todo_write 建立双层计划（编号阶段 + 缩进子步骤），之后每轮更新。
+- 连续多轮执行工具却不更新任务列表会触发停滞保护（stall guard），任务会被暂停。`);
   }
 
   if (workspacePath) {
