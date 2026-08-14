@@ -20,6 +20,14 @@ const REPEAT_SUCCESS_THRESHOLD = 2;
 /** Same tool failing this many times (regardless of error text) → abort. */
 const SAME_TOOL_FAIL_HARD_LIMIT = 4;
 
+/**
+ * Host-side meta tools: their "failures" are protocol-bookkeeping errors
+ * (malformed todo lists, bad evidence), NOT execution failures. Hard-stopping
+ * a whole task because the model misused todo_write burns the user's work —
+ * a corrective note is the right response.
+ */
+const META_TOOLS = new Set(["todo_write", "complete_step", "update_goal", "ask_question"]);
+
 /** Signature of a failure: tool name + first error line. */
 function failureSignature(rec: ToolResultRecord): string {
   const errLine = rec.output.split("\n").find((l) => /error|failed|exception|fail/i.test(l)) || "unknown-error";
@@ -48,21 +56,43 @@ export function evaluateToolGuards(
     const allResults = [...taskState.results, ...records];
     const recentResults = allResults.slice(-24);
 
-    // Hard stop: one tool failed repeatedly no matter the error text — the
-    // model is stuck in a retry loop and would keep burning tokens.
+    // Hard stop: one REAL tool failed repeatedly no matter the error text —
+    // the model is stuck in a retry loop and would keep burning tokens.
+    // Meta tools are exempt: their failures are protocol bookkeeping.
     for (const fail of failures) {
+      if (META_TOOLS.has(fail.name)) continue;
       const sameToolFails = recentResults.filter(
         (r) => r.name === fail.name && (r.output.startsWith("Error:") || r.output.includes("[Execution Error]"))
       ).length;
       if (sameToolFails >= SAME_TOOL_FAIL_HARD_LIMIT) {
+        const lastErr = (fail.output.split("\n").find((l) => /error|failed/i.test(l)) || fail.output.slice(0, 160)).trim();
         return {
-          note: `[Guard] Tool "${fail.name}" has failed ${sameToolFails} times in a row. Stopping the task — retrying the same tool will not succeed.`,
+          note: `[Guard] Tool "${fail.name}" has failed ${sameToolFails} times in a row — stopping. Last error: ${lastErr.slice(0, 160)}. Retrying the same tool will not succeed; change approach (different arguments, a different tool, or fix the underlying cause first).`,
           hardStop: true,
         };
       }
     }
 
+    // Meta tools failing repeatedly get a corrective note instead of a stop.
+    const metaFails = failures.filter((f) => META_TOOLS.has(f.name));
+    for (const fail of metaFails) {
+      const count = recentResults.filter((r) => r.name === fail.name && (r.output.startsWith("Error:") || r.output.includes("[Execution Error]"))).length;
+      if (count >= 3) {
+        const hint = fail.name === "todo_write"
+          ? "Read the validation error carefully: status must be pending/in_progress/completed; only ONE in_progress; completed items form a serial prefix; phases finish only after all sub-steps."
+          : fail.name === "complete_step"
+            ? "complete_step needs: the exact current step (title or 1-based index), a result, and at least one evidence item (verification command that ran successfully this session, or file paths written this session)."
+            : fail.name === "update_goal"
+              ? "update_goal status must be one of: complete / continue / blocked, with reason and next_action."
+              : "Check the tool's parameter format and retry once with corrected arguments.";
+        return {
+          note: `[Guard] ${fail.name} was rejected ${count} times by the host. ${hint}`,
+        };
+      }
+    }
+
     for (const fail of failures) {
+      if (META_TOOLS.has(fail.name)) continue;
       const sig = failureSignature(fail);
       const count = recentResults.filter((r) => r.output.startsWith("Error:") && failureSignature(r) === sig).length;
       if (count >= STORM_THRESHOLD) {
@@ -74,6 +104,7 @@ export function evaluateToolGuards(
 
     // Repeat-failure guard: same write intent + same error class twice.
     for (const fail of failures) {
+      if (META_TOOLS.has(fail.name)) continue;
       const sig = failureSignature(fail);
       const sameErrorTwice = recentResults.filter((r) => r.output.startsWith("Error:") && failureSignature(r) === sig).length;
       if (sameErrorTwice >= REPEAT_FAIL_THRESHOLD && (fail.name === "write_workspace_file" || fail.name === "patch_workspace_file" || fail.name === "multi_edit")) {

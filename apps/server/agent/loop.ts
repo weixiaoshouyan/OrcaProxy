@@ -10,7 +10,7 @@ import {
   nextPendingStep, type ToolResultRecord,
 } from "./task-state";
 import {
-  validateTodos, todoCounts, todoReceipt, advanceTodos, matchTodoStep, renderTodoLine,
+  validateTodos, todoCounts, todoReceipt, advanceTodos, matchTodoStep, renderTodoLine, repairTodos,
 } from "./todo";
 import { maybeSummarize } from "../agent/summarizer";
 import { scheduleToolCalls } from "./scheduler";
@@ -271,16 +271,21 @@ function handleTodoMetaTool(
       ...(t?.activeForm ? { activeForm: String(t.activeForm).slice(0, 120) } : {}),
       ...(t?.level === 0 || t?.level === 1 ? { level: t.level } : {}),
     }));
-    const validation = validateTodos(normalized);
+    // Auto-repair common protocol violations (multiple in_progress,
+    // out-of-order completed, phase with unfinished sub-steps) instead of
+    // rejecting the whole list — a hard rejection made models retry the same
+    // mistake and eventually trip the tool-failure guard.
+    const { items, notes } = repairTodos(normalized);
+    const validation = validateTodos(items);
     if (!validation.ok) return `Error: ${validation.error}`;
-    taskState.todos = normalized;
+    taskState.todos = items;
     saveTaskState(taskState);
-    const receipt = todoReceipt(normalized);
+    const receipt = todoReceipt(items) + (notes.length > 0 ? ` Host auto-fixed: ${notes.join(" ")}` : "");
     // Synthetic one-line stream update (Reasonix-style: progress lives in the
     // todo state, not in model text). renderTodoLine already emits the "> 📋"
     // prefix — do not wrap it again or the line renders as "> 📋 > 📋 ...".
-    writeDelta(`\n${renderTodoLine(normalized)}\n`);
-    broadcast("task_plan", taskState.taskId, { todos: normalized, phase: taskState.phase });
+    writeDelta(`\n${renderTodoLine(items)}\n`);
+    broadcast("task_plan", taskState.taskId, { todos: items, phase: taskState.phase, autoFixed: notes.length });
     return receipt;
   }
 

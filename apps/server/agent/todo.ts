@@ -57,6 +57,60 @@ export function validateTodos(todos: TodoItem[]): TodoValidation {
   return { ok: true };
 }
 
+/**
+ * Auto-repair the common todo_write protocol violations instead of rejecting
+ * the whole list (models frequently resend stale lists with two in_progress
+ * items or an out-of-order completed item, and a hard rejection makes them
+ * retry the same mistake). Each repair is reported in `notes` so the model
+ * learns the rule. Strict validation (validateTodos) still exists for tests
+ * and non-tool callers.
+ */
+export function repairTodos(todos: TodoItem[]): { items: TodoItem[]; notes: string[] } {
+  const items = todos.map((t) => ({ ...t }));
+  const notes: string[] = [];
+  const brief = (s: string) => (s.length > 30 ? s.slice(0, 30) + "…" : s);
+
+  // 1. At most one in_progress: keep the first, demote the rest to pending.
+  let seenInProgress = false;
+  for (const t of items) {
+    if (t.status === "in_progress") {
+      if (seenInProgress) {
+        t.status = "pending";
+        notes.push(`"${brief(t.content)}" 降为 pending（in_progress 只能有一个）`);
+      }
+      seenInProgress = true;
+    }
+  }
+
+  // 2. Completed items must form a serial prefix: demote out-of-order ones.
+  let seenNonCompleted = false;
+  for (const t of items) {
+    if (t.status === "completed") {
+      if (seenNonCompleted) {
+        t.status = "pending";
+        notes.push(`"${brief(t.content)}" 降为 pending（completed 必须连续前缀）`);
+      }
+    } else {
+      seenNonCompleted = true;
+    }
+  }
+
+  // 3. A phase (level 0) marked completed while its sub-steps are unfinished
+  //    is demoted back to pending.
+  for (let i = 0; i < items.length; i++) {
+    const t = items[i];
+    if (t.level === 0 && t.status === "completed") {
+      const subs = items.slice(i + 1).filter((s) => (s.level ?? 1) === 1);
+      if (subs.length > 0 && subs.some((s) => s.status !== "completed")) {
+        t.status = "pending";
+        notes.push(`阶段 "${brief(t.content)}" 恢复为 pending（子步骤未全部完成）`);
+      }
+    }
+  }
+
+  return { items, notes };
+}
+
 /** Count helper for receipts and rendering. */
 export function todoCounts(todos: TodoItem[]): { total: number; completed: number; inProgress: number; pending: number } {
   return {

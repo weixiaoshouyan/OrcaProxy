@@ -237,37 +237,58 @@ export async function runAgentTask(
         }
 
         if (!progressed && nextCounter >= 16) {
-          // Collect the tool calls from recent rounds so the pause report
-          // explains WHAT the agent was doing, not just that it stalled.
-          const toolNames: string[] = [];
-          for (let i = messages.length - 1; i >= 0 && toolNames.length < 6; i--) {
-            const m = messages[i];
-            if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
-              for (const tc of m.tool_calls) {
-                const name = tc?.function?.name;
-                if (name && !toolNames.includes(name)) toolNames.push(name);
+          // Auto-replan (up to 2 times) before pausing: a task that stalls on
+          // plan bookkeeping should be nudged back on track automatically —
+          // pausing on the FIRST stall forces the user to intervene manually
+          // for what is usually a recoverable model behaviour.
+          const autoReplans = Number(taskState.metadata.stallAutoReplans || 0);
+          if (autoReplans < 2) {
+            taskState.metadata.stallAutoReplans = autoReplans + 1;
+            taskState.metadata.todoStallCounter = 0;
+            taskState.phase = "replan";
+            const replanNote =
+              `[Guard] 连续 ${nextCounter} 轮任务列表没有进展（第 ${autoReplans + 1} 次自动重新规划，共 2 次机会）。` +
+              `立即调用 todo_write 重建/更新计划（编号阶段 + 缩进子步骤），然后继续推进；` +
+              `若你无法继续，请调用 update_goal(status:"blocked", next_action:"...") 明确说明需要用户提供什么。`;
+            taskState.metadata.replanReason = replanNote;
+            messages.push({ role: "system" as const, content: replanNote });
+            log("warn", `[Guard] Auto-replan #${autoReplans + 1}: ${replanNote.slice(0, 120)}…`);
+            broadcast("task_error", taskState.taskId, { error: replanNote });
+            saveTaskState(taskState);
+            // fall through — continue the round loop with the corrective note
+          } else {
+            // Collect the tool calls from recent rounds so the pause report
+            // explains WHAT the agent was doing, not just that it stalled.
+            const toolNames: string[] = [];
+            for (let i = messages.length - 1; i >= 0 && toolNames.length < 6; i--) {
+              const m = messages[i];
+              if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
+                for (const tc of m.tool_calls) {
+                  const name = tc?.function?.name;
+                  if (name && !toolNames.includes(name)) toolNames.push(name);
+                }
               }
             }
+            const toolsText = toolNames.length
+              ? `最近工具调用: ${toolNames.join(", ")}`
+              : "最近没有工具调用";
+            const pauseNote =
+              `[Guard] 任务已暂停：已自动重新规划 2 次仍无进展（连续 ${nextCounter} 轮）。${toolsText}。` +
+              `可能原因：模型一直在调用工具但没有更新计划（todo_write / complete_step）。` +
+              `进度已保存——在「任务」页点击恢复即可继续，恢复后模型会收到本原因并重新制定计划。` +
+              ` (no plan progress after 2 auto-replans; resume from the Tasks page)`;
+            log("warn", `[Guard] ${pauseNote}`);
+            broadcast("task_error", taskState.taskId, { error: pauseNote });
+            taskState.phase = "replan";
+            taskState.metadata.replanReason = pauseNote;
+            taskState.messages = messages;
+            saveTaskState(taskState);
+            const pauseChunk = mkChunk(null, resolved.model, `\n\n${pauseNote}\n`, "error");
+            safeWrite(res, "data: " + JSON.stringify(pauseChunk) + "\n\n");
+            safeWrite(res, "data: [DONE]\n\n");
+            if (!res.writableEnded) { try { res.end(); } catch { /* already closed */ } }
+            return;
           }
-          const toolsText = toolNames.length
-            ? `最近工具调用: ${toolNames.join(", ")}`
-            : "最近没有工具调用";
-          const pauseNote =
-            `[Guard] 任务已暂停：连续 ${nextCounter} 轮任务列表没有进展。${toolsText}。` +
-            `可能原因：模型一直在调用工具但没有更新计划（todo_write / complete_step）。` +
-            `进度已保存——在「任务」页点击恢复即可继续，恢复后模型会收到本原因并重新制定计划。` +
-            ` (no plan progress for ${nextCounter} rounds; resume from the Tasks page)`;
-          log("warn", `[Guard] ${pauseNote}`);
-          broadcast("task_error", taskState.taskId, { error: pauseNote });
-          taskState.phase = "replan";
-          taskState.metadata.replanReason = pauseNote;
-          taskState.messages = messages;
-          saveTaskState(taskState);
-          const pauseChunk = mkChunk(null, resolved.model, `\n\n${pauseNote}\n`, "error");
-          safeWrite(res, "data: " + JSON.stringify(pauseChunk) + "\n\n");
-          safeWrite(res, "data: [DONE]\n\n");
-          if (!res.writableEnded) { try { res.end(); } catch { /* already closed */ } }
-          return;
         }
         if (!progressed && nextCounter >= 8) {
           const nudgeNote = noTodos
@@ -722,7 +743,12 @@ export async function runAgentTask(
             const reflection = await generateReflection(taskState, failedRecords, resolved.provider, resolved.apiKey, resolved.model);
             const reflectionPrompt = buildReflectionPrompt(reflection);
             messages.push({ role: "system" as const, content: reflectionPrompt });
-            writeDelta(`\n\n[Self-Reflection] ${reflection.analysis}\n`);
+            // Only surface the reflection in the visible transcript when it is
+            // a real model-generated analysis — the local fallback is useful
+            // context for the model but noise for the user.
+            if (!reflection.analysis.startsWith("Reflection model call failed")) {
+              writeDelta(`\n\n[Self-Reflection] ${reflection.analysis}\n`);
+            }
           }
           messages.push({ role: "system" as const, content: buildReplanPrompt(taskState, verification.note) });
         } else {

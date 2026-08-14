@@ -11,6 +11,7 @@ import {
   todoReceipt,
   renderTodoLine,
   parsePlanTodos,
+  repairTodos,
 } from "../agent/todo";
 
 let passed = 0;
@@ -119,6 +120,40 @@ check("last phase no sub-steps", parsed[6].level === 0 && parsed[6].content === 
 
 const badPlan = parsePlanTodos("# Heading only\n\nSome text without list markers");
 check("heading not parsed as phase", badPlan.every((t) => !t.content.startsWith("#")));
+
+// ---- repairTodos (auto-fix common protocol violations) ----
+
+const multiProgress = repairTodos([
+  { content: "A", status: "in_progress" as const },
+  { content: "B", status: "in_progress" as const },
+  { content: "C", status: "pending" as const },
+]);
+check("repair: multiple in_progress demoted", multiProgress.items.filter((t) => t.status === "in_progress").length === 1
+  && multiProgress.items[1].status === "pending"
+  && multiProgress.notes.length >= 1, `notes=${multiProgress.notes.length}`);
+check("repair: result validates", validateTodos(multiProgress.items).ok);
+
+const outOfOrder = repairTodos([
+  { content: "A", status: "completed" as const },
+  { content: "B", status: "pending" as const },
+  { content: "C", status: "completed" as const },
+]);
+check("repair: out-of-order completed demoted", outOfOrder.items[2].status === "pending"
+  && outOfOrder.items[0].status === "completed" && validateTodos(outOfOrder.items).ok);
+
+const prematurePhase = repairTodos([
+  { content: "Phase", status: "completed" as const, level: 0 },
+  { content: "Sub", status: "pending" as const, level: 1 },
+]);
+check("repair: phase with unfinished subs demoted", prematurePhase.items[0].status === "pending"
+  && validateTodos(prematurePhase.items).ok);
+
+const clean = repairTodos([
+  { content: "A", status: "completed" as const },
+  { content: "B", status: "in_progress" as const },
+]);
+check("repair: valid list untouched", clean.notes.length === 0 && clean.items.length === 2
+  && clean.items[1].status === "in_progress");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

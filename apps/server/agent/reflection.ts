@@ -5,6 +5,7 @@
 
 import { log } from "../utils/log";
 import { buildProbeUrl } from "../services/health";
+import { fetchWithRetry } from "./loop";
 import type { TaskState, ToolResultRecord } from "./task-state";
 import type { Provider } from "../providers";
 
@@ -16,6 +17,24 @@ export interface ReflectionResult {
 }
 
 const REFLECTION_MAX_TOKENS = 600;
+
+/** Local fallback analysis synthesized from the failed tool outputs — used
+ *  when the reflection LLM call itself fails, so the model still receives
+ *  concrete (not boilerplate) feedback. */
+function synthesizeFallback(taskState: TaskState, failedRecords: ToolResultRecord[]): ReflectionResult {
+  const details = failedRecords.slice(0, 3).map((r) => {
+    const firstErr = r.output.split("\n").find((l) => /error|failed|exception|exit code/i.test(l)) || r.output.slice(0, 120);
+    return `- ${r.name}: ${firstErr.trim().slice(0, 140)}`;
+  }).join("\n");
+  return {
+    analysis: `Reflection model call failed — local fallback. ${failedRecords.length} tool execution(s) failed:\n${details || "- (no details)"}`,
+    suggestions: [
+      "Re-read the failing file/command output and correct the exact cause (quoting, paths, syntax) before retrying",
+      "Prefer a different approach than repeating the same tool+arguments",
+    ],
+    shouldRetry: true,
+  };
+}
 
 /**
  * Analyze tool execution failures and generate self-critique.
@@ -72,6 +91,7 @@ Provide your analysis in this exact JSON format (no other text):
         model,
         max_tokens: REFLECTION_MAX_TOKENS,
         temperature: 0.3,
+        stream: false, // explicit: some gateways default to streaming and resp.json() then fails
         messages: [
           { role: "system", content: "You are a precise self-reflecting agent. Output ONLY valid JSON, no markdown fences." },
           { role: "user", content: prompt },
@@ -79,41 +99,41 @@ Provide your analysis in this exact JSON format (no other text):
       };
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-    try {
-      const resp = await fetch(targetUrl, { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
-
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json() as any;
+    // fetchWithRetry: SSRF guard + retry on 429/5xx + 60s timeout (reflection
+    // runs mid-task; a slow gateway must not stall the loop forever).
+    const resp = await fetchWithRetry(targetUrl, { method: "POST", headers, body: JSON.stringify(body) }, 2, 1000);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+    const data = await resp.json() as any;
 
     let content: string;
     if (isAnthropic) {
       content = data.content?.[0]?.text || "";
     } else {
-      content = data.choices?.[0]?.message?.content || "";
+      content = data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || "";
     }
 
     // Strip markdown fences if present
     content = content.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/\s*```$/, "").trim();
 
-    const parsed = JSON.parse(content);
+    // Find the first JSON object in the response (models sometimes prepend
+    // prose even when told not to).
+    const jsonStart = content.indexOf("{");
+    const jsonEnd = content.lastIndexOf("}");
+    const jsonText = jsonStart >= 0 && jsonEnd > jsonStart ? content.slice(jsonStart, jsonEnd + 1) : content;
+
+    const parsed = JSON.parse(jsonText);
     return {
       analysis: parsed.analysis || "Unknown failure",
       suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
       shouldRetry: parsed.shouldRetry !== false,
       retryStrategy: parsed.retryStrategy || undefined,
     };
-    } finally {
-      clearTimeout(timeout);
-    }
   } catch (e) {
-    log("warn", "[Reflection] Failed to generate reflection:", e);
-    return {
-      analysis: "Automatic reflection unavailable",
-      suggestions: ["Review the error output carefully", "Try a different approach"],
-      shouldRetry: true,
-    };
+    // Log the concrete reason (status/network) so the failure is diagnosable,
+    // then fall back to a locally-synthesized analysis instead of a useless
+    // "Automatic reflection unavailable" placeholder.
+    log("warn", "[Reflection] Model call failed, using local fallback:", e);
+    return synthesizeFallback(taskState, failedRecords);
   }
 }
 
