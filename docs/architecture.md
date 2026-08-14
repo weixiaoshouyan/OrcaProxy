@@ -88,8 +88,29 @@ Orca/
 ## 运行时数据
 
 - `data/config.json` — 供应商、模型、配置（含密钥，明文落盘，请勿提交）
-- `data/billing.json` — 计费统计（原子写入）
+- `data/billing.json` — 计费统计（原子写入、写队列串行化防并发丢失）
 - `data/.token` — 自动生成的本地令牌（`LOCAL_AUTH_TOKEN` 未设置时）
-- `data/agent-tasks/` — 任务状态 JSON
+- `data/agent-tasks/` — 任务状态 JSON（原子写入）
 - `data/cache.json` — 响应缓存
-- `data/checkpoints/` — 会话检查点
+- `data/checkpoints/` — 会话检查点（含文件变更 preimage，供 rewind 与 diff 参考）
+
+## 停滞保护（Stall Guard）
+
+任务执行中，宿主每轮对比任务列表（todos）签名（`content:status` 串联）；连续多轮无变化即判定停滞：
+
+| 轮次 | 行为 |
+|---|---|
+| 4（且计划为空） | 注入明确指令：立即调用 `todo_write` 建立双层计划 |
+| 8 | 升级警告（区分"计划为空"与"计划停滞"） |
+| 16 | **暂停任务**：写入 replan 状态，输出双语原因 + 最近工具调用清单 + 恢复指引 |
+
+常见触发场景：模型反复调用工具（如 PowerShell 引号导致 `python -c` 失败重试）却没有更新计划。系统提示内置 [Windows 终端指引] 与 [任务列表纪律] 以预防；任务可在「任务」页一键恢复。
+
+## 前端设计系统（Abyssal 深渊洋流）
+
+- **设计令牌**：全部颜色/阴影经 CSS 变量定义于 `apps/ui/src/index.css`（`--color-*`、`--shadow-*`），深色为"深渊"（虎鲸黑蓝 + 生物荧光青主色 `#2fd6c3`），浅色为"海面晨曦"（冰蓝白）；默认 accent 为 `orca`（`html[data-accent="orca"]`），深色下自动提亮
+- **品牌签名**：海洋渐变品牌方块 + 声呐脉冲扩散动效（`.orca-sonar`）、渐变品牌字标（`.orca-wordmark`）
+- **消息渲染管线**：`parseAssistantMessage` 输出 text / think / todos / tool / notice 五类块；系统通知（`[Guard]`、`[Waiting]`、`> ⚠️`、`> 🛑` 等）渲染为彩色状态卡片（`NoticeCard`）
+- **任务可视化**：右侧栏任务 Tab 与 Composer Todo 架统一消费 `/api/tasks/:id/todos` 轻量端点，渲染宿主维护的双层计划（阶段 + 子步骤 + activeForm）
+- **Diff 视图**：写文件工具结果携带 `[Diff <path> +N -M]` 段（`utils/diff.ts` LCS 行级 diff），UI 以徽章 + 绿/红着色展示
+- 原 accent 调色板（green/blue/…）与主题预设（Dracula/Nord/Catppuccin/…）保留可用
