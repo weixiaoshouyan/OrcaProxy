@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Zap, Key, Activity, Sparkles, BarChart2, List, Calendar, ChevronDown, FileSpreadsheet, RefreshCw } from 'lucide-react';
 import { api } from '../api';
 import { translate as t } from '../i18n';
@@ -266,18 +266,24 @@ export default function Dashboard({ lang }: DashboardProps) {
     }
   };
 
-  const days = getChartXAxis();
+  // Memoize chart inputs: without this, `days` / `modelsList` get fresh array
+  // references on EVERY render, and the two chart effects (deps include them)
+  // re-run full setOption(option, true) redraws on any state change — including
+  // the 5s polling tick and unrelated UI state (page size, sort, menu open).
+  const days = useMemo(() => getChartXAxis(), [timeUnit, selectedYear, selectedMonthNum]);
 
   // Extract all models from data to build series (filtered by active model IDs)
-  const allModelsSet = new Set<string>();
-  Object.values(billingData).forEach((dayData) => {
-    Object.keys(dayData).forEach(model => {
-      if (activeModelIds.size === 0 || activeModelIds.has(model)) {
-        allModelsSet.add(model);
-      }
+  const modelsList = useMemo(() => {
+    const allModelsSet = new Set<string>();
+    Object.values(billingData).forEach((dayData) => {
+      Object.keys(dayData).forEach(model => {
+        if (activeModelIds.size === 0 || activeModelIds.has(model)) {
+          allModelsSet.add(model);
+        }
+      });
     });
-  });
-  const modelsList = Array.from(allModelsSet);
+    return Array.from(allModelsSet);
+  }, [billingData, activeModelIds]);
 
   // Default color palette for models (sleek HSL hues)
   const modelColors: Record<string, string> = {
@@ -427,7 +433,10 @@ export default function Dashboard({ lang }: DashboardProps) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             formatter: (params: any) => {
               const p = params as TooltipParam[];
-              let date = p[0]?.axisValue || '';
+              // Series names / dates flow into tooltip HTML — escape them so a
+              // provider/model id can never inject markup (XSS via chart tooltip).
+              const esc = (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+              let date = esc(p[0]?.axisValue || '');
               let tooltipHtml = `<div style="font-weight: 700; margin-bottom: 8px; font-size: 13px; color: ${c.textPrimary};">${date}</div>`;
 
               const lineItem = p.find((item) => item.seriesName === 'Token 总消耗');
@@ -446,7 +455,7 @@ export default function Dashboard({ lang }: DashboardProps) {
                     <div style="display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 4px; font-size: 12px;">
                       <span style="display: flex; align-items: center; gap: 6px; color: ${c.textSecondary};">
                         <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: ${color};"></span>
-                        ${item.seriesName}
+                        ${esc(item.seriesName)}
                       </span>
                       <span style="font-weight: 700; color: ${c.textPrimary}; font-family: monospace;">${val.toLocaleString()}</span>
                     </div>
@@ -586,8 +595,9 @@ export default function Dashboard({ lang }: DashboardProps) {
               formatter: (params: any) => {
                 const p = params as TooltipParam[];
                 const item = p[0];
+                const esc = (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
                 return `
-                  <div style="font-weight: 700; margin-bottom: 4px; font-size: 13px; color: ${c.textPrimary};">${item.name}</div>
+                  <div style="font-weight: 700; margin-bottom: 4px; font-size: 13px; color: ${c.textPrimary};">${esc(item.name)}</div>
                   <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 12px;">
                     <span style="display: flex; align-items: center; gap: 6px; color: ${c.textSecondary};">
                       <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: ${item.color};"></span>

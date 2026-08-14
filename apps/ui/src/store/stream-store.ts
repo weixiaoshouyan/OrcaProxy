@@ -51,6 +51,22 @@ const PERSIST_DEBOUNCE = 2000;
 const FLUSH_DELAY = 120;
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 3000;
+// How long a finished stream stays in the live map after finalize. Subscribers
+// (Chat.tsx applyLiveStream) coalesce live updates onto a ~250ms trailing-edge
+// timer; deleting the entry synchronously in finalizeStream would make that
+// timer find nothing — dropping the final content flush and the loading=false
+// reset (stuck spinner + locked composer + missing reply tail).
+const FINAL_CLEANUP_DELAY = 1000;
+const finalCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleFinalCleanup(chatId: string): void {
+  const existing = finalCleanupTimers.get(chatId);
+  if (existing) clearTimeout(existing);
+  finalCleanupTimers.set(chatId, setTimeout(() => {
+    finalCleanupTimers.delete(chatId);
+    live.delete(chatId);
+  }, FINAL_CLEANUP_DELAY));
+}
 
 export function subscribeStreams(fn: (chatId: string) => void): () => void {
   listeners.add(fn);
@@ -134,7 +150,8 @@ function finalizeStream(st: LiveStream, outcome: 'done' | 'error' | 'aborted' = 
   // notification, so skip it here to avoid double notifications.
   maybeNotifyDesktop(st, outcome);
   notify(st.chatId);
-  live.delete(st.chatId);
+  // Do NOT delete synchronously — see FINAL_CLEANUP_DELAY above.
+  scheduleFinalCleanup(st.chatId);
 }
 
 /**
@@ -267,10 +284,22 @@ export function startStream(
     existing.body = body;
     existing.messages = messages;
     existing.contextLimit = contextLimit;
-    existing.loading = true;
     existing.retryCount = 0;
-    notify(chatId);
-    void runFetch(existing);
+    if (!existing.loading) {
+      // Finished (or awaiting final cleanup) — restart the stream fresh.
+      existing.loading = true;
+      notify(chatId);
+      void runFetch(existing);
+    } else if (!existing.abort) {
+      // Loading but no fetch in flight (retry wait) — resume the retry loop.
+      notify(chatId);
+      void runFetch(existing);
+    } else {
+      // Already streaming: never start a second concurrent fetch (deltas would
+      // interleave into the same message). Update metadata and keep the
+      // running stream. Callers guard with isStreaming(), this is a backstop.
+      notify(chatId);
+    }
     return;
   }
   const st: LiveStream = {
@@ -305,5 +334,5 @@ export function abortStream(chatId: string): void {
   st.loading = false;
   persistStream(st, true);
   notify(chatId);
-  live.delete(chatId);
+  scheduleFinalCleanup(chatId);
 }

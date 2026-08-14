@@ -30,7 +30,7 @@ export interface AuditEntry {
 
 let _auditDir: string | null = null;
 let _currentDate: string | null = null;
-let _buffer: AuditEntry[] = [];
+const _buffer: AuditEntry[] = [];
 let _flushTimer: NodeJS.Timeout | null = null;
 
 function getAuditDir(): string {
@@ -45,16 +45,27 @@ function getCurrentDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function getLogFile(): string {
+function getLogFile(date: string): string {
+  return path.join(getAuditDir(), `audit-${date}.jsonl`);
+}
+
+/**
+ * Roll the daily audit file over when the date changes. Flushes the previous
+ * day's buffer to the previous day's file BEFORE switching, then updates the
+ * current date — previously the date flip happened inside getLogFile() after
+ * a flush(), which re-entered getLogFile() and relied on an empty buffer to
+ * terminate (fragile implicit recursion).
+ */
+function ensureCurrentDate(): void {
   const date = getCurrentDate();
   if (date !== _currentDate) {
     flush();
     _currentDate = date;
   }
-  return path.join(getAuditDir(), `audit-${date}.jsonl`);
 }
 
 export function logAudit(entry: AuditEntry): void {
+  ensureCurrentDate();
   _buffer.push(entry);
 
   if (!_flushTimer) {
@@ -70,7 +81,10 @@ export function flush(): void {
   if (_buffer.length === 0) return;
 
   const entries = _buffer.splice(0);
-  const logFile = getLogFile();
+  // Entries buffered under the previous date flush to the previous date's
+  // file; on the same day _currentDate is already today.
+  const date = _currentDate ?? getCurrentDate();
+  const logFile = getLogFile(date);
   const lines = entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
 
   try {

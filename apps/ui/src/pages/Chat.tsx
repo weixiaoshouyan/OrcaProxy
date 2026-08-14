@@ -12,6 +12,7 @@ import rehypeSanitize from 'rehype-sanitize';
 import { rehypeSanitizeHardened } from '../utils/rehype-sanitize-hardened';
 import { api } from '../api';
 import { startStream, abortStream, subscribeStreams, getLive, listLive, isStreaming } from '../store/stream-store';
+import { useToast } from '../components/Toast';
 import { translate as t } from '../i18n';
 import type { Language } from '../i18n';
 
@@ -128,6 +129,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   const [atFolderStack, setAtFolderStack] = useState<string[]>([]);
   const [loadingChats, setLoadingChats] = useState<Record<string, boolean>>({});
   const [activeDropdown, setActiveDropdown] = useState<'none' | 'preset' | 'model' | 'quality' | 'readyTools' | 'buildPlan'>('none');
+  const toast = useToast();
 
   // Sync loadingChats to ref for use in useEffect without causing re-renders
   useEffect(() => {
@@ -204,6 +206,11 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
       // Clean up drag listeners if unmounted mid-drag
       dragListenerRef.current?.cleanup();
       dragListenerRef.current = null;
+      // Drop any pending live-stream coalesce timers (their state is owned by
+      // stream-store and applied again on next mount via listLive()).
+      Object.values(streamApplyTimerRef.current).forEach((t) => { if (t) clearTimeout(t); });
+      streamApplyTimerRef.current = {};
+      pendingStreamApplyRef.current.clear();
       // Don't abort streams on unmount - they live in stream-store and keep
       // running + persisting in the background until they finish.
     };
@@ -416,7 +423,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
       await api.post('/api/open-file', { filepath: fullPath });
     } catch (err) {
       console.error("Failed to open file:", err);
-      alert(lang === 'en' ? 'Failed to open file.' : '打开文件失败。');
+      toast.error(lang === 'en' ? 'Failed to open file.' : '打开文件失败。');
     }
   };
 
@@ -479,10 +486,10 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
           content: response.data.content
         });
       } else {
-        alert(lang === 'en' ? 'Failed to read file: ' + (response.data.error || 'unknown error') : '读取文件失败：' + (response.data.error || '未知错误'));
+        toast.error(lang === 'en' ? 'Failed to read file: ' + (response.data.error || 'unknown error') : '读取文件失败：' + (response.data.error || '未知错误'));
       }
     } catch (err: any) {
-      alert(lang === 'en' ? 'Failed to read file: ' + err.message : '读取文件失败：' + err.message);
+      toast.error(lang === 'en' ? 'Failed to read file: ' + err.message : '读取文件失败：' + err.message);
     }
   };
 
@@ -542,7 +549,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
       });
       if (res.data && res.data.ok) {
         setCommitMessage('');
-        alert(lang === 'en' ? 'Changes committed successfully!' : '提交成功！');
+        toast.success(lang === 'en' ? 'Changes committed successfully!' : '提交成功！');
         // Refresh git info immediately
         const statusRes = await api.post('/api/git/status', { cwd: activeWorkspace?.path });
         if (statusRes.data) {
@@ -558,25 +565,26 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
       }
     } catch (err: any) {
       console.error(err);
-      alert((lang === 'en' ? 'Failed to commit: ' : '提交失败: ') + (err.response?.data?.error || err.message));
+      toast.error((lang === 'en' ? 'Failed to commit: ' : '提交失败: ') + (err.response?.data?.error || err.message));
     } finally {
       setCommitting(false);
     }
   };
 
   // Track tool execution for file monitoring
-  const trackFileOperation = useCallback((toolName: string, content: string) => {
-    const fileOps = ['write_to_file', 'write', 'replace_in_file', 'edit_file', 'create_file'];
-    if (fileOps.some(op => toolName.toLowerCase().includes(op.toLowerCase()))) {
-      const fileMatch = content.match(/["']?([a-zA-Z0-9_\-/.\\]+\.\w{1,10})["']?/);
-      if (fileMatch) {
-        setModifiedFiles(prev => {
-          const exists = prev.find(f => f.path === fileMatch[1]);
-          if (exists) return prev;
-          return [{ path: fileMatch[1], action: 'modified', time: new Date().toLocaleTimeString() }, ...prev.slice(0, 49)];
-        });
-      }
-    }
+  const trackFileOperation = useCallback((toolName: string, label: string) => {
+    const WRITE_TOOL_PATHS = ['write_workspace_file', 'patch_workspace_file', 'multi_edit', 'batch_write_files', 'move_file', 'write_file', 'replace_in_file', 'edit_file', 'create_file'];
+    if (!WRITE_TOOL_PATHS.some(op => toolName.toLowerCase().includes(op.toLowerCase()))) return;
+    // The label is the tool's file-path argument (server-side toolActivityLabel);
+    // the block content is the FILE CONTENT / command output — regexing it for
+    // dotted strings yields garbage paths (e.g. "0.5.1" from a version bump).
+    const path = (label || '').trim();
+    if (!path) return;
+    setModifiedFiles(prev => {
+      const exists = prev.find(f => f.path === path);
+      if (exists) return prev;
+      return [{ path, action: 'modified', time: new Date().toLocaleTimeString() }, ...prev.slice(0, 49)];
+    });
   }, []);
 
   const presets: Record<string, { name: string; systemPrompt: string }> = {
@@ -879,6 +887,12 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   // Calculate context token usage from active conversation
   useEffect(() => {
     if (!activeChat) return;
+    // While a stream is live, the server reports REAL token usage via
+    // parsed.usage (applyLiveStream writes st.contextTokens). Don't clobber it
+    // with a character-count heuristic on every 250ms flush — that's why the
+    // context ring showed a stale estimate instead of the actual usage.
+    const live = getLive(activeChat.id);
+    if (live && live.contextTokens) return;
     const allContent = activeChat.messages.map(m => m.content).join(' ');
     let count = 0;
     for (let i = 0; i < allContent.length; i++) {
@@ -966,7 +980,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   const handleDeleteChat = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (conversations.length === 1) {
-      alert(t('chat.delete.confirm', lang));
+      toast.warning(t('chat.delete.confirm', lang));
       return;
     }
     const updated = conversations.filter(c => c.id !== id);
@@ -1036,7 +1050,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
         saveChatsToStorage(merged);
         if (imported.length > 0) setActiveId(imported[0].id);
       } catch (err) {
-        alert(lang === 'en' ? 'Invalid JSON file.' : '无效的 JSON 文件');
+        toast.error(lang === 'en' ? 'Invalid JSON file.' : '无效的 JSON 文件');
       }
     };
     reader.readAsText(file);
@@ -1116,16 +1130,23 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
       setAskAnswerText('');
       setPendingAsk(null);
     } catch (e: any) {
-      alert(String(e?.message || e));
+      toast.error(String(e?.message || e));
     } finally {
       setAskSubmitting(false);
     }
   };
 
   const clearContext = (chatId: string) => {
-    setConversations(prev => prev.map(c =>
-      c.id === chatId ? { ...c, messages: [] } : c
-    ));
+    setConversations(prev => {
+      const updated = prev.map(c =>
+        c.id === chatId ? { ...c, messages: [] } : c
+      );
+      // Persist immediately — otherwise a page refresh brings the cleared
+      // messages back (stream-store's debounced persist only rewrites content,
+      // never removes messages).
+      saveChatsToStorage(updated);
+      return updated;
+    });
   };
 
   // Change active model
@@ -1160,7 +1181,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
     
     // Check file size (limit to 5MB for text reading)
     if (file.size > 5 * 1024 * 1024) {
-      alert(t('chat.file.large', lang));
+      toast.warning(t('chat.file.large', lang));
       return;
     }
 
@@ -1440,7 +1461,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
     if (attachedFile) {
       // Warn if file is too large (>200KB)
       if (attachedFile.content.length > 200 * 1024) {
-        alert(lang === 'en'
+        toast.warning(lang === 'en'
           ? 'File is too large for direct attachment (>200KB). Please use a smaller file or reference it via workspace tools.'
           : '文件过大无法直接附加 (>200KB)。请使用更小的文件或通过工作区工具引用。');
         return;
@@ -3809,7 +3830,7 @@ function ToolExecutionBlock({ block, lang, onFileOp }: { block: any; lang: Langu
 
   useEffect(() => {
     if (!isRunning && onFileOp) {
-      onFileOp(block.toolName || '', content);
+      onFileOp(block.toolName || '', block.label || '');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRunning, block.toolName]);

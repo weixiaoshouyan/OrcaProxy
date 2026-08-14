@@ -44,6 +44,90 @@ interface AnthropicTool {
   input_schema: Record<string, unknown>;
 }
 
+// ---- 转换: OpenAI Chat messages -> Anthropic Messages ----------------------
+// The agent loop (and OpenAI-format pass-through clients) build messages in
+// OpenAI shape: assistant.tool_calls[] + role:"tool" results. The Anthropic
+// Messages API instead wants content blocks (tool_use / tool_result) with
+// strictly alternating roles. Sending OpenAI-format messages raw to
+// /v1/messages fails on the first tool round, so convert on the way out.
+
+export interface AnthropicMessageOut {
+  role: "user" | "assistant";
+  content: string | AnthropicContentBlockOut[];
+}
+
+export interface AnthropicContentBlockOut {
+  type: "text" | "tool_use" | "tool_result";
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: string;
+}
+
+/** Convert OpenAI-format chat messages (agent loop / pass-through clients)
+ *  into Anthropic Messages API format. Returns the extracted system text and
+ *  the converted message list with consecutive same-role messages merged
+ *  (Anthropic rejects non-alternating roles). */
+export function openAIMessagesToAnthropic(messages: any[]): { system: string; messages: AnthropicMessageOut[] } {
+  const systemText: string[] = [];
+  const out: AnthropicMessageOut[] = [];
+
+  const textOf = (content: unknown): string => {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content.filter((c: any) => c?.type === "text").map((c: any) => c.text || "").join("\n");
+    }
+    return "";
+  };
+
+  const mergeUser = (msg: AnthropicMessageOut): void => {
+    const last = out[out.length - 1];
+    if (last && last.role === "user") {
+      const lastBlocks: AnthropicContentBlockOut[] =
+        typeof last.content === "string" ? [{ type: "text", text: last.content }] : [...last.content];
+      const newBlocks: AnthropicContentBlockOut[] =
+        typeof msg.content === "string" ? [{ type: "text", text: msg.content }] : [...msg.content];
+      last.content = [...lastBlocks, ...newBlocks];
+      return;
+    }
+    out.push(msg);
+  };
+
+  for (const m of messages) {
+    const role = m?.role;
+    if (role === "system") {
+      const text = textOf(m.content);
+      if (text) systemText.push(text);
+    } else if (role === "user") {
+      const text = textOf(m.content);
+      if (text) mergeUser({ role: "user", content: text });
+    } else if (role === "assistant") {
+      const text = textOf(m.content);
+      const toolCalls: any[] = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+      if (!text && toolCalls.length === 0) continue;
+      const blocks: AnthropicContentBlockOut[] = [];
+      if (text) blocks.push({ type: "text", text });
+      for (const tc of toolCalls) {
+        let input: Record<string, unknown> = {};
+        try { input = JSON.parse(tc?.function?.arguments || "{}"); } catch { /* malformed args → empty input */ }
+        blocks.push({
+          type: "tool_use",
+          id: tc?.id || `toolu_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+          name: tc?.function?.name || "",
+          input,
+        });
+      }
+      out.push({ role: "assistant", content: blocks });
+    } else if (role === "tool") {
+      const contentText = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+      mergeUser({ role: "user", content: [{ type: "tool_result", tool_use_id: m.tool_call_id || "", content: contentText }] });
+    }
+  }
+  return { system: systemText.join("\n\n"), messages: out };
+}
+
 // ---- 转换: Anthropic Request -> OpenAI Chat Request ------------------------
 
 export interface OpenAIChatRequest {

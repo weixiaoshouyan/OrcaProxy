@@ -71,30 +71,46 @@ export async function resumeTaskInBackground(taskId: string): Promise<void> {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      // Never let a hung upstream keep the task stuck in resumingTasks.
-      signal: AbortSignal.timeout(60_000),
+      // Long-running headless execution: the agent loop may run up to its 2h
+      // hard timeout. A short client-side timeout would kill the fetch
+      // mid-task — the server loop would keep running unseen while the
+      // bookkeeping below races with it. 6h covers the loop's own hard cap
+      // with margin; a dead server still fails fast (connection refused).
+      signal: AbortSignal.timeout(6 * 60 * 60 * 1000),
     });
 
     if (!resp.ok) {
       const err = await resp.text();
-      taskState.metadata.resumeError = `${resp.status}: ${err.slice(0, 500)}`;
-      taskState.phase = "replan";
-      saveTaskState(taskState);
+      // Re-load the CURRENT task state — the agent loop has been updating it
+      // during the request. The snapshot captured at resume start is stale;
+      // writing it would roll back messages/results/todos saved meanwhile.
+      const fresh = loadTaskState(taskId);
+      if (fresh) {
+        fresh.metadata.resumeError = `${resp.status}: ${err.slice(0, 500)}`;
+        fresh.phase = "replan";
+        saveTaskState(fresh);
+      }
       log("error", `[TaskResume] Auto-resume failed for ${taskId}: ${resp.status} ${err.slice(0, 500)}`);
       return;
     }
 
     const data = (await resp.json()) as any;
     const output = data.choices?.[0]?.message?.content || JSON.stringify(data);
-    delete taskState.metadata.resumeError;
-    taskState.metadata.resumeOutput = output.slice(0, 8000);
-    taskState.phase = "done";
-    saveTaskState(taskState);
+    const fresh = loadTaskState(taskId);
+    if (fresh) {
+      delete fresh.metadata.resumeError;
+      fresh.metadata.resumeOutput = output.slice(0, 8000);
+      fresh.phase = "done";
+      saveTaskState(fresh);
+    }
     log("info", `[TaskResume] Task ${taskId} auto-resumed successfully`);
   } catch (e: any) {
-    taskState.metadata.resumeError = e.message;
-    taskState.phase = "replan";
-    saveTaskState(taskState);
+    const fresh = loadTaskState(taskId);
+    if (fresh) {
+      fresh.metadata.resumeError = e.message;
+      fresh.phase = "replan";
+      saveTaskState(fresh);
+    }
     log("error", `[TaskResume] Auto-resume exception for ${taskId}:`, e.message);
   } finally {
     resumingTasks.delete(taskId);

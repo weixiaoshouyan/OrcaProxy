@@ -32,12 +32,15 @@ function matches(e: KeyboardEvent, b: ShortcutBinding): boolean {
   return true;
 }
 
-export function useShortcuts(bindings: ShortcutBinding[]) {
+export function useShortcuts(bindings: ShortcutBinding[], options?: { enabled?: boolean }) {
   const bindingsRef = useRef(bindings);
   bindingsRef.current = bindings;
+  const enabledRef = useRef(options?.enabled ?? true);
+  enabledRef.current = options?.enabled ?? true;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (!enabledRef.current) return;
       for (const b of bindingsRef.current) {
         if (!matches(e, b)) continue;
         if (!b.whenInInput && isInEditableTarget(e.target)) continue;

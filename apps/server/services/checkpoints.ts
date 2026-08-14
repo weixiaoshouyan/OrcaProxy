@@ -171,12 +171,19 @@ export function saveTurnCheckpoint(opts: {
 }): Checkpoint | null {
   // Aggregate all active mutation records that belong to this turn.
   const files: FileSnapshot[] = [];
-  for (const record of activeMutations.values()) {
+  const consumed: string[] = [];
+  for (const [toolCallId, record] of activeMutations) {
     if (record.conversationId !== opts.conversationId || record.turn !== opts.turn) continue;
+    consumed.push(toolCallId);
     for (const f of record.files) {
       if (!files.some((existing) => existing.path === f.path)) files.push(f);
     }
   }
+  // The checkpoint consumes these records: release them so the map cannot
+  // grow unbounded across turns/tasks (each entry holds a full file preimage
+  // string). Records for OTHER conversations/turns are left for their own
+  // checkpoints.
+  for (const id of consumed) activeMutations.delete(id);
   if (files.length === 0) return null;
 
   const checkpoint: Checkpoint = {

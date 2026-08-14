@@ -152,7 +152,7 @@ export function registerManagementRoutes(app: express.Application): void {
   app.get("/api/status", (_req, res) => {
     const active = getActiveProvider();
     res.json({
-      status: "ok", version: "2.1.0", uptime: process.uptime(),
+      status: "ok", version: "2.2.0", uptime: process.uptime(),
       activeProvider: { id: active.id, name: active.name, baseUrl: active.baseUrl },
       stats: getStats()
     });
@@ -191,7 +191,7 @@ export function registerManagementRoutes(app: express.Application): void {
       const c = loadConfig();
       const payload = {
         _format: "orca-config",
-        _version: "2.1.1",
+        _version: "2.2.0",
         _exportedAt: new Date().toISOString(),
         config: c,
       };

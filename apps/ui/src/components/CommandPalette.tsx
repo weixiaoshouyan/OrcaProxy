@@ -134,16 +134,18 @@ export function CommandPalette({ open, onClose, onNewChat, onNewBuildPlan, onCle
   }, [query]);
 
   useShortcuts([
-    { key: 'Escape', handler: onClose, preventDefault: true },
+    { key: 'Escape', handler: onClose, preventDefault: true, whenInInput: true },
     {
       key: 'ArrowDown',
       handler: () => setActiveIndex(i => Math.min(filtered.length - 1, i + 1)),
       preventDefault: true,
+      whenInInput: true,
     },
     {
       key: 'ArrowUp',
       handler: () => setActiveIndex(i => Math.max(0, i - 1)),
       preventDefault: true,
+      whenInInput: true,
     },
     {
       key: 'Enter',
@@ -155,8 +157,9 @@ export function CommandPalette({ open, onClose, onNewChat, onNewBuildPlan, onCle
         }
       },
       preventDefault: true,
+      whenInInput: true,
     },
-  ]);
+  ], { enabled: open });
 
   if (!open) return null;
 

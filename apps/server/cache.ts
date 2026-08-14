@@ -128,6 +128,15 @@ export function computeCacheKey(body: any): string {
     temperature: body.temperature ?? 0.7,
     max_tokens: body.max_tokens ?? 0,
     top_p: body.top_p ?? 1.0,
+    // Sampling/format parameters that change the output must be part of the
+    // key — otherwise requests differing only in these would share a cached
+    // response (e.g. JSON mode vs. plain text, different stop sequences).
+    stop: Array.isArray(body.stop) ? body.stop : (body.stop ? [body.stop] : []),
+    frequency_penalty: body.frequency_penalty ?? 0,
+    presence_penalty: body.presence_penalty ?? 0,
+    seed: body.seed ?? null,
+    response_format: body.response_format ? JSON.stringify(body.response_format) : "",
+    tool_choice: body.tool_choice ? JSON.stringify(body.tool_choice) : "",
     tools: (body.tools || []).map((t: any) => ({
       name: t.function?.name || t.name,
       description: t.function?.description || t.description || ""
@@ -224,6 +233,16 @@ export async function replayStreamResponse(
       clearInterval(interval);
     try {
       if (!res.writableEnded) {
+        // Strict clients expect a terminal chunk carrying finish_reason:"stop"
+        // before [DONE]; a bare [DONE] can be treated as an incomplete stream.
+        const stopChunk = {
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        };
+        res.write(`data: ${JSON.stringify(stopChunk)}\n\n`);
         res.write("data: [DONE]\n\n");
         res.end();
       }

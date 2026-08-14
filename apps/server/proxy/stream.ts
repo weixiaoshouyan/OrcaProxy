@@ -54,8 +54,19 @@ export async function streamSSE(
   const flushWrites = () => {
     flushScheduled = false;
     if (writeBuffer && !res.writableEnded) {
-      res.write(writeBuffer);
-      writeBuffer = "";
+      try {
+        res.write(writeBuffer);
+        writeBuffer = "";
+      } catch (e) {
+        // Client went away between buffering and flush (socket destroyed).
+        // res.write on a destroyed socket throws ERR_STREAM_DESTROYED; with no
+        // 'error' listener on the response that becomes an uncaughtException
+        // and kills the whole server. Never let a dead socket take us down.
+        log("warn", "[stream] write failed (client gone):", e);
+        clientDisconnected = true;
+        writeBuffer = "";
+        try { res.destroy(); } catch { /* already closed */ }
+      }
     }
   };
 

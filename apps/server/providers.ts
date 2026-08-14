@@ -168,6 +168,7 @@ export const BUILTIN_PROVIDERS: Provider[] = [
 import path from "path";
 import fs from "fs";
 import { resolveBaseDir, migrateLegacyDataFile } from "./utils/base-dir";
+import { atomicWriteFileSync } from "./utils/helpers";
 
 export interface Profile {
   id: string;
@@ -243,7 +244,11 @@ function defaultConfig(): RuntimeConfig {
     autoSyncInterval: "never",
     cacheEnabled: true,
     healthCheckEnabled: true,
-    autoVerify: true,
+    // Off by default: autoVerify runs workspace package.json scripts (npm
+    // test / lint / build, npx tsc) synchronously after every write round —
+    // blocking the event loop for minutes and executing untrusted scripts.
+    // Opt in via config.autoVerify = true.
+    autoVerify: false,
     fallbackProviderIds: [],
     appPaths: {},
     modelPricing: {
@@ -345,7 +350,9 @@ export function saveConfig(cfg: RuntimeConfig): void {
   _config = cfg;
   try {
     fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf-8");
+    // Atomic write: a crash mid-write must never leave a truncated config.json
+    // behind (a corrupt config silently resets the whole setup on next boot).
+    atomicWriteFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
   } catch (e) {
     console.error("Failed to save config:", e);
   }

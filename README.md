@@ -35,7 +35,15 @@ DeepSeek / 通义千问 / 智谱AI / 小米MiMo / OpenAI / Anthropic 等（支�
 
 ## 版本
 
-v2.1.1（变更记录见 [docs/](docs/architecture.md) 与 git 历史）
+v2.2.0（变更记录见 [docs/](docs/architecture.md) 与 git 历史）
+
+### v2.2.0 变更摘要
+
+- **安全加固**：修复全部 npm audit 告警（body-parser DoS / Electron 35 系列 20+ 项 / electron-builder / esbuild）；工具事件流不再广播原始参数；仪表盘图表 tooltip 转义防注入；登录 token 使用后立即从地址栏清除；`autoVerify` 默认关闭（避免执行工作区不可信脚本）
+- **核心稳定性**：修复流结束时加载态卡死/末尾内容丢失/输入框锁死的竞态（P0）；修复 `fetchEventSource` 对无空格 `data:` 帧、`[DONE]` 后不关闭连接的处理；SSE 写路径与 keep-alive 全部加保护，客户端断开不再可能击穿进程
+- **Agent 引擎**：Anthropic 上游 + Agent 模式完整消息双向转换（此前多轮工具调用必然 400）；修复上下文压缩后 `<task-state>` 指令重复堆积；断线时轮次边界立即停止而非无头执行 2 小时；`complete_step` 强制串行签收（不能再无证据连带完成当前步骤）；检查点 preimage 内存泄漏修复；repo map 5 分钟 TTL 缓存（不再每次请求全仓扫描）；后台任务恢复不再用过期快照覆盖状态
+- **前端体验**：命令面板快捷键修复（ESC/方向键/回车）；10 处阻塞式 `alert()` 全部改为 Toast；"清空上下文"即时持久化；修改文件列表改为取工具路径而非内容正则；图表在无关状态变化时不再重复全量重绘
+- **工程清理**：删除 10 个死代码文件（重复的 Chat 渲染管线/状态库/工具集，消除 `MODEL_CONTEXT_SIZES` 常量分叉）；统一版本号
 
 ---
 
@@ -46,7 +54,7 @@ v2.1.1（变更记录见 [docs/](docs/architecture.md) 与 git 历史）
 免安装版（Windows x64）：
 
 ```
-release/Orca-Proxy-2.1.1-portable.exe   # 单文件免安装版，双击即用
+release/Orca-Proxy-2.2.0-portable.exe   # 单文件免安装版，双击即用
 release/win-unpacked/Orca Proxy.exe    # 免安装目录版
 ```
 

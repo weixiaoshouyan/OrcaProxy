@@ -467,7 +467,7 @@ function createTray() {
   }
 
   tray = new Tray(trayIcon);
-  tray.setToolTip('Orca Universal Proxy v2.1.1');
+  tray.setToolTip('Orca Universal Proxy v2.2.0');
 
   const contextMenu = Menu.buildFromTemplate([
     {

@@ -1,6 +1,6 @@
 // ============================================================
 // apps/server/index.ts
-// Orca Universal Proxy v2.1.1 — Main Entry Point
+// Orca Universal Proxy v2.2.0 — Main Entry Point
 // ============================================================
 // Architecture:
 //   apps/server/utils/      base-dir, log, stats (shared utilities)
@@ -548,7 +548,7 @@ const server = app.listen(PORT, HOST, () => {
   }
   const active = getActiveProvider();
   log("info", "===========================================");
-  log("info", "  Orca Universal Proxy v2.1.1");
+  log("info", "  Orca Universal Proxy v2.2.0");
   log("info", `  Listening on http://${HOST}:${PORT}`);
   log("info", `  Active provider: ${active.name} (${active.baseUrl})`);
   log("info", `  Log level: ${cfg.logLevel || "info"}`);
@@ -583,7 +583,9 @@ app.get("/api/agent/stream", (req, res) => {
   res.write(`event: connected\ndata: {"timestamp":${Date.now()}}\n\n`);
 
   const keepAlive = setInterval(() => {
-    if (!res.writableEnded) res.write(": keep-alive\n\n");
+    if (!res.writableEnded) {
+      try { res.write(": keep-alive\n\n"); } catch { /* socket dead — cleaned up on 'close' */ }
+    }
   }, 20000);
 
   req.on("close", () => {
@@ -596,7 +598,14 @@ app.get("/api/agent/stream", (req, res) => {
 (global as any).__orca_broadcastAgentEvent = (event: any) => {
   const data = `event: agent_event\ndata: ${JSON.stringify(event)}\n\n`;
   for (const client of agentEventClients) {
-    if (!client.writableEnded) client.write(data);
+    if (client.writableEnded) { agentEventClients.delete(client); continue; }
+    try {
+      client.write(data);
+    } catch {
+      // Dead socket mid-write: drop it. Never let a client disconnect throw
+      // into the agent loop (it would corrupt the broadcast + crash the task).
+      agentEventClients.delete(client);
+    }
   }
   // P0-2: Desktop notification when a task finishes or fails — only in
   // Electron mode (the renderer may be hidden/minimized to tray, and the
@@ -628,7 +637,15 @@ server.maxRequestsPerSocket = 0;    // 0 = 无限制（keep-alive 持续复用�
 function gracefulShutdown(signal: string) {
   log("info", `Received ${signal}, shutting down gracefully...`);
   shutdownMCPServers();
-  saveConfig(cfg);
+  // Persist the CURRENT config, not the startup snapshot: the module-level
+  // `cfg` captured at boot is a stale reference — saveConfig() swaps the
+  // module singleton on every runtime change, so writing `cfg` here would
+  // roll back provider keys / port / MCP settings edited during this session.
+  try {
+    saveConfig(loadConfig());
+  } catch (e) {
+    log("error", "[Shutdown] Failed to persist config:", e);
+  }
   try {
     const { flush } = require("./services/audit");
     flush();

@@ -21,6 +21,7 @@ import {
   createAnthropicToOpenAIState,
   processAnthropicToOpenAIChunk,
   generateAnthropicToOpenAIEndEvents,
+  openAIMessagesToAnthropic,
 } from "../anthropic";
 import {
   type TaskState, createTaskState, loadTaskState, saveTaskState,
@@ -76,18 +77,19 @@ function safeWrite(res: Response, text: string): boolean {
 /** Upsert the per-round <task-state> directive as the LAST system message. */
 function upsertDirective(messages: ChatMessage[], taskState: TaskState | undefined, round: number, goal: string): void {
   const directive = composeDirective(taskState, round, goal);
-  // Drop legacy <orca_task_plan> blocks carried over from older sessions.
-  const legacyIdx = messages.findIndex(
-    (m) => m.role === "system" && typeof m.content === "string" && m.content.startsWith("<orca_task_plan>")
-  );
-  if (legacyIdx >= 0) messages.splice(legacyIdx, 1);
-  // The directive is the last system message; replace if one is already there.
-  const last = messages[messages.length - 1];
-  if (last && last.role === "system" && typeof last.content === "string" && last.content.startsWith("<task-state")) {
-    last.content = directive;
-  } else {
-    messages.push({ role: "system", content: directive } satisfies ChatMessage);
+  // Remove ALL stale directive blocks. Context compression can move a previous
+  // directive away from the end of the message list, so checking only the last
+  // system message lets stale copies (old round numbers, old todo snapshots)
+  // accumulate and directly contradict the "single source of truth" contract.
+  // Legacy <orca_task_plan> blocks from older sessions are dropped here too.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "system" && typeof m.content === "string" &&
+        (m.content.startsWith("<task-state") || m.content.startsWith("<orca_task_plan>"))) {
+      messages.splice(i, 1);
+    }
   }
+  messages.push({ role: "system", content: directive } satisfies ChatMessage);
 }
 
 interface TurnResult {
@@ -176,6 +178,21 @@ export async function runAgentTask(
   let nonStreamData: any = null;
 
   while (true) {
+    // Client disconnected while we were waiting on the model or running tools
+    // (browser/tab closed, proxy dropped the connection): stop the loop at the
+    // next round boundary. Without this, a dead request keeps calling the
+    // model and executing write tools unseen for up to the 2h hard timeout.
+    if (isClientGone()) {
+      if (taskState) {
+        taskState.phase = "replan";
+        taskState.metadata.resumeNote = "Client disconnected mid-task; execution state preserved. Resume from the Tasks page to continue.";
+        taskState.messages = messages;
+        saveTaskState(taskState);
+        log("info", `[Agent] Client disconnected at round boundary — state preserved for task ${taskState.taskId}`);
+      }
+      if (!res.writableEnded) { try { res.end(); } catch { /* already closed */ } }
+      return;
+    }
     if (taskState) taskState.iteration = round;
 
     // Round cap — never exceed the configured budget.
@@ -276,20 +293,14 @@ export async function runAgentTask(
     if (resolved.provider.id === "anthropic") {
       targetUrl = buildProbeUrl(resolved.provider.baseUrl, "/messages");
       headers = { "Content-Type": "application/json", "x-api-key": resolved.apiKey, "anthropic-version": "2023-06-01" };
-      const systemMsgs = messages.filter((m) => m.role === "system");
-      const normalMsgs = messages.filter((m) => m.role !== "system");
-      const systemText = systemMsgs.map((m) => {
-        const content = m.content as any;
-        if (typeof content === "string") return content;
-        if (Array.isArray(content)) {
-          return content.filter((c: any) => c.type === "text").map((c: any) => c.text || "").join("\n");
-        }
-        return "";
-      }).filter(Boolean).join("\n");
+      // The agent loop's internal message shape is OpenAI (assistant.tool_calls
+      // + role:"tool" results); convert to Anthropic content blocks (tool_use /
+      // tool_result) or the first tool round would 400 on /v1/messages.
+      const { system: systemText, messages: anthropicMessages } = openAIMessagesToAnthropic(messages);
       const anthropicBody: Record<string, unknown> = {
         model: resolved.model,
         max_tokens: body.max_tokens || getAnthropicMaxOutput(resolved.model),
-        messages: normalMsgs,
+        messages: anthropicMessages,
       };
       if (systemText) anthropicBody.system = systemText;
       if (body.temperature !== undefined) anthropicBody.temperature = body.temperature;
@@ -377,6 +388,10 @@ export async function runAgentTask(
         stallTimer = setTimeout(() => {
           stallTimer = null;
           log("warn", `[Chat] Upstream stalled (no data for ${STALL_TIMEOUT_MS / 1000}s), aborting stream`);
+          // Mark the turn interrupted so the truncated response is not treated
+          // as a complete round (previously reader.cancel() made read() return
+          // {done:true} and the loop ended "cleanly").
+          streamInterrupted = true;
           try { reader.cancel("stall timeout"); } catch { /* already closed */ }
         }, STALL_TIMEOUT_MS);
         if (stallTimer.unref) stallTimer.unref();
@@ -542,12 +557,17 @@ export async function runAgentTask(
         throw new Error(`Upstream returned ${upstreamResp.status}: ${errText}`);
       }
       const data = await upstreamResp.json() as any;
-      nonStreamData = data;
-      if (data.usage) {
-        data.usage.prompt_tokens = data.usage.input_tokens || data.usage.prompt_tokens || 0;
-        data.usage.completion_tokens = data.usage.output_tokens || data.usage.completion_tokens || 0;
+      // Non-streaming Anthropic responses come back as content blocks — convert
+      // to OpenAI chat.completion shape so the shared turn-parsing below (and
+      // the response cache, which OpenAI clients consume) sees one format.
+      nonStreamData = resolved.provider.id === "anthropic"
+        ? convertAnthropicResponseToOpenAI(data, resolved.model)
+        : data;
+      if (nonStreamData.usage) {
+        nonStreamData.usage.prompt_tokens = nonStreamData.usage.input_tokens || nonStreamData.usage.prompt_tokens || 0;
+        nonStreamData.usage.completion_tokens = nonStreamData.usage.output_tokens || nonStreamData.usage.completion_tokens || 0;
       }
-      const choice = data.choices?.[0];
+      const choice = nonStreamData.choices?.[0];
       if (choice?.message) {
         if (choice.message.reasoning_content) {
           const existingContent = typeof choice.message.content === "string" ? choice.message.content : "";
@@ -840,18 +860,14 @@ export async function runPassthroughProxy(
   if (isAnthropic) {
     targetUrl = buildProbeUrl(resolved.provider.baseUrl, "/messages");
     headers = { "Content-Type": "application/json", "x-api-key": resolved.apiKey, "anthropic-version": "2023-06-01" };
-    const systemMsgs = messages.filter((m) => m.role === "system");
-    const normalMsgs = messages.filter((m) => m.role !== "system");
-    const systemText = systemMsgs.map((m) => {
-      const c = m.content as any;
-      if (typeof c === "string") return c;
-      if (Array.isArray(c)) return c.filter((x: any) => x.type === "text").map((x: any) => x.text || "").join("\n");
-      return "";
-    }).filter(Boolean).join("\n");
+    // OpenAI-format messages (from /v1/chat/completions clients) converted to
+    // Anthropic content blocks, including tool_calls → tool_use / tool results
+    // → tool_result across rounds.
+    const { system: systemText, messages: anthropicMessages } = openAIMessagesToAnthropic(messages);
     const anthropicBody: Record<string, unknown> = {
       model: resolved.model,
       max_tokens: body.max_tokens || getAnthropicMaxOutput(resolved.model),
-      messages: normalMsgs,
+      messages: anthropicMessages,
     };
     if (systemText) anthropicBody.system = systemText;
     if (body.temperature !== undefined) anthropicBody.temperature = body.temperature;

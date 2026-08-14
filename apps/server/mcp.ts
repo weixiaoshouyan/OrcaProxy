@@ -1,4 +1,4 @@
-﻿import { spawn, ChildProcess } from "child_process";
+import { spawn, ChildProcess } from "child_process";
 import readline from "readline";
 
 export interface MCPConfig {
@@ -162,7 +162,7 @@ class MCPClient {
     await this.sendRequest("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "Orca-Universal-Proxy", version: "2.1.0" },
+      clientInfo: { name: "Orca-Universal-Proxy", version: "2.2.0" },
     });
 
     // 2. Send initialized notification (doesn't expect reply)

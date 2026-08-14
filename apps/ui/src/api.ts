@@ -10,6 +10,12 @@ const urlParams = new URLSearchParams(window.location.search);
 const urlToken = urlParams.get('token');
 if (urlToken) {
   sessionStorage.setItem('orca_token', urlToken);
+  // Strip the token from the address bar / history immediately: leaving it in
+  // the URL leaks it into browser history, screenshots, and server access logs.
+  try {
+    const cleanUrl = window.location.origin + window.location.pathname + window.location.search.replace(/([?&])token=[^&#]*/i, '$1').replace(/[?&]$/, '') + window.location.hash;
+    window.history.replaceState(null, '', cleanUrl);
+  } catch { /* non-critical — cookie/header auth still works */ }
 }
 const token = urlToken || sessionStorage.getItem('orca_token') || '';
 
@@ -364,6 +370,56 @@ export async function fetchEventSource(
     armWatchdog();
 
     let buffer = '';
+    // SSE spec: consecutive `data:` lines form ONE event, joined by \n and
+    // dispatched when a blank line (or the next event) follows. Our upstream
+    // normally sends one JSON object per event, but proxies / providers may
+    // split payloads, so accumulate defensively.
+    let dataLines: string[] = [];
+    const flushData = (): void => {
+      if (dataLines.length === 0) return;
+      const dataStr = dataLines.join('\n').trim();
+      dataLines = [];
+      if (!dataStr || dataStr === '[DONE]') return;
+      try {
+        onMessage(dataStr);
+      } catch (e) {
+        console.error('Parse error', e);
+      }
+    };
+    const finishStream = (): void => {
+      disarmWatchdog();
+      onDone();
+    };
+    const handleLine = (line: string): 'done' | 'continue' => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        // Blank line terminates the current SSE event.
+        flushData();
+        return 'continue';
+      }
+      // Comments / event-name lines: flush any pending data block first.
+      if (trimmed.startsWith('event:') || trimmed.startsWith(':')) {
+        flushData();
+        return 'continue';
+      }
+      if (trimmed.startsWith('data:')) {
+        const payload = trimmed.substring(5).trim();
+        if (payload === '[DONE]') {
+          // Terminal marker: stop reading immediately. Some proxies leave the
+          // connection open after [DONE]; waiting for EOF would hang until the
+          // idle watchdog and then trigger a spurious error + duplicate retry.
+          flushData();
+          finishStream();
+          return 'done';
+        }
+        dataLines.push(payload);
+        return 'continue';
+      }
+      // Unknown line: flush pending data, ignore the line.
+      flushData();
+      return 'continue';
+    };
+
     while (true) {
       let result: { value?: Uint8Array; done: boolean };
       try {
@@ -382,34 +438,14 @@ export async function fetchEventSource(
       const lines = buffer.split('\n');
       buffer = lines.pop() || ''; // Keep the last incomplete line in the buffer
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        // Skip event: lines and comments
-        if (trimmed.startsWith('event:') || trimmed.startsWith(':')) continue;
-        if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
-          const dataStr = trimmed.substring(6);
-          try {
-            onMessage(dataStr);
-          } catch (e) {
-            console.error("Parse error", e);
-          }
-        }
+        if (handleLine(line) === 'done') return;
       }
     }
-    
-    // Process residual buffer if any
-    if (buffer.trim()) {
-      const trimmed = buffer.trim();
-      if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
-        const dataStr = trimmed.substring(6);
-        try {
-          onMessage(dataStr);
-        } catch (e) {
-          console.error("Parse error", e);
-        }
-      }
-    }
-    
+
+    // Process residual buffer + any accumulated (not yet blank-terminated) data.
+    if (buffer) handleLine(buffer);
+    flushData();
+
     disarmWatchdog();
     if (idleTimedOut) {
       onError(new Error('SSE stream idle timeout'));

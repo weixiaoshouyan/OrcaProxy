@@ -287,6 +287,17 @@ function handleTodoMetaTool(
     if (idx < 0) return `Error: step "${step.slice(0, 80)}" not found in the todo list. Use the exact step title or its 1-based number.`;
     const item = taskState.todos[idx];
     if (item.status === "completed") return `Step "${item.content}" is already completed.`;
+    // Serial-protocol enforcement: only the CURRENT in_progress item (or, when
+    // nothing is in_progress, the next pending item) may be signed off. Without
+    // this, signing off an arbitrary item then advancing the list would ALSO
+    // complete the actual in_progress item with zero evidence.
+    const inProgIdx = taskState.todos.findIndex((x) => x.status === "in_progress");
+    const nextPendingIdx = taskState.todos.findIndex((x) => x.status === "pending");
+    const isCurrent = idx === inProgIdx || (inProgIdx < 0 && idx === nextPendingIdx);
+    if (!isCurrent) {
+      const currentName = inProgIdx >= 0 ? taskState.todos[inProgIdx].content : (nextPendingIdx >= 0 ? taskState.todos[nextPendingIdx].content : "none");
+      return `Error: step "${item.content.slice(0, 80)}" is not the current step. The current step is "${String(currentName).slice(0, 80)}" — sign it off first (or mark it in_progress via todo_write).`;
+    }
     if (item.level === 0) {
       const subs = taskState.todos.slice(idx + 1).filter((t) => (t.level ?? 1) === 1);
       if (subs.some((s) => s.status !== "completed")) {
@@ -429,7 +440,11 @@ export async function executeToolsInParallel(
       const label = toolActivityLabel(tc.name, tc.arguments);
       writeDelta(`\n\n> 🔧 **Agent Executing Tool:** \`${tc.name}\`${label ? ` — ${label}` : ""}...\n`);
       if (taskState) {
-        broadcast("tool_start", taskState.taskId, { toolName: tc.name, toolCallId: tc.id, arguments: tc.arguments });
+        // The agent event stream endpoint is intentionally unauthenticated
+        // (read-only progress), so never broadcast raw tool arguments there —
+        // they may contain commands / paths / workspace secrets. Send only a
+        // human label.
+        broadcast("tool_start", taskState.taskId, { toolName: tc.name, toolCallId: tc.id, label });
       }
     }
 

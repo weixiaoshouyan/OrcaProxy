@@ -45,6 +45,26 @@ const CONFIG_FILES = new Set([
  * Analyze workspace and generate a repo map
  */
 export function generateRepoMap(workspacePath: string, maxFiles = 50): RepoMap {
+  const key = `${workspacePath}|${maxFiles}`;
+  const cached = repoMapCache.get(key);
+  if (cached && Date.now() - cached.at < REPO_MAP_TTL_MS) return cached.map;
+
+  const result: RepoMap = buildRepoMap(workspacePath, maxFiles);
+
+  // Bound the cache: a handful of workspaces is typical; clear all once large.
+  if (repoMapCache.size > 32) repoMapCache.clear();
+  repoMapCache.set(key, { at: Date.now(), map: result });
+  return result;
+}
+
+// TTL-cache for repo maps. Building one reads every source file in the
+// workspace synchronously (event-loop blocking), and buildCodebaseContext runs
+// on EVERY agent request — without a cache a large repo stalls the server for
+// seconds per request. 5-minute staleness is acceptable for agent context.
+const repoMapCache = new Map<string, { at: number; map: RepoMap }>();
+const REPO_MAP_TTL_MS = 5 * 60 * 1000;
+
+function buildRepoMap(workspacePath: string, maxFiles: number): RepoMap {
   const result: RepoMap = {
     totalFiles: 0,
     totalLines: 0,
