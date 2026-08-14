@@ -1,41 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { ArrowUp, ChevronDown, ChevronRight, Sparkles, Bot, User, Trash2, FileText, X, Square, Terminal, Loader, CheckCircle, Check, CornerUpLeft, Eye, Play, GitBranch, FolderGit2, Activity, Clock, Download, Upload, Folder, FolderOpen, Search, Paperclip, HelpCircle, Settings } from 'lucide-react';
+import { ChevronDown, Sparkles, Bot, User, HelpCircle, Settings } from 'lucide-react';
 import { CommandPalette } from '../components/CommandPalette';
 import SettingsModal from '../components/SettingsModal';
 import RewindModal from '../components/RewindModal';
 import ShortcutsCheatsheet from '../components/ShortcutsCheatsheet';
-import TerminalPanel from '../components/TerminalPanel';
 import { api } from '../api';
 import { startStream, abortStream, subscribeStreams, getLive, listLive, isStreaming, type LiveUsage } from '../store/stream-store';
 import { useToast } from '../components/Toast';
 import { translate as t } from '../i18n';
 import type { Language } from '../i18n';
-import type { Conversation } from '../types/chat';
+import type { Conversation, ActiveDropdown, SidebarTab } from '../types/chat';
+import type { Workspace, WorkspaceItem } from '../types';
 import { getModelContextLimit } from '../utils/model-context';
 import { qualId, displayModelLabel } from '../utils/model-label';
 import { hasAgentActivity, cleanThinkTags } from '../utils/chat-render';
-import { SpinnerWords, MemoizedAssistantMessage, ChatEmptyState, ChatHeader, MessageFooter, TodoShelf } from '../components/chat';
-
-function PenSquareIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={props.className}
-      style={props.style}
-    >
-      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-      <path d="M18.5 2.5a2.12 2.12 0 1 1 3 3L12 15l-4 1 1-4Z" />
-    </svg>
-  );
-}
+import { MemoizedAssistantMessage, ChatEmptyState, ChatHeader, MessageFooter, ConversationSidebar, Composer, RightSidebar } from '../components/chat';
 
 export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, theme, setTheme }: {
   lang: Language;
@@ -58,7 +37,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   const inputMenuRef = useRef<HTMLDivElement>(null);
   const [atFolderStack, setAtFolderStack] = useState<string[]>([]);
   const [loadingChats, setLoadingChats] = useState<Record<string, boolean>>({});
-  const [activeDropdown, setActiveDropdown] = useState<'none' | 'preset' | 'model' | 'quality' | 'readyTools' | 'buildPlan'>('none');
+  const [activeDropdown, setActiveDropdown] = useState<ActiveDropdown>('none');
   const toast = useToast();
 
   // Sync loadingChats to ref for use in useEffect without causing re-renders
@@ -190,12 +169,6 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   const loadingChatsRef = useRef<Record<string, boolean>>({});
 
   // Workspace selector state
-  interface Workspace {
-    id: string;
-    name: string;
-    path: string;
-    initial: string;
-  }
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>('');
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
@@ -319,7 +292,7 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   const [rightSidebarOpen, setRightSidebarOpen] = useState(() => {
     return localStorage.getItem('orca_right_sidebar_open') !== 'false';
   });
-  const [rightSidebarTab, setRightSidebarTab] = useState<'tasks' | 'files' | 'git' | 'terminal'>('tasks');
+  const [rightSidebarTab, setRightSidebarTab] = useState<SidebarTab>('tasks');
   const [rightSidebarWidth, setRightSidebarWidth] = useState(() => {
     return parseInt(localStorage.getItem('orca_right_sidebar_width') || '300');
   });
@@ -366,13 +339,6 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
   };
 
   // Workspace explorer tree types & state
-  interface WorkspaceItem {
-    name: string;
-    relativePath: string;
-    absolutePath: string;
-    isDirectory: boolean;
-    size?: number;
-  }
   const [folderContents, setFolderContents] = useState<Record<string, WorkspaceItem[]>>({});
   const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({});
   const [fileSearchQuery, setFileSearchQuery] = useState('');
@@ -1003,6 +969,41 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
     e.target.value = '';
   };
 
+  // Workspace menu actions (delegated to ConversationSidebar)
+  const handleClearNotifications = () => {
+    if (activeChat) {
+      const systemMsg = activeChat.messages.find(m => m.role === 'system');
+      const updated = conversations.map(c => {
+        if (c.id === activeId) {
+          return { ...c, messages: systemMsg ? [systemMsg] : [{ role: 'system', content: presets.standard.systemPrompt }] };
+        }
+        return c;
+      });
+      saveChatsToStorage(updated);
+    }
+    setWorkspaceMenuOpen(false);
+  };
+
+  const handleCloseWorkspace = () => {
+    setWorkspaces(prev => {
+      const updated = prev.filter(w => w.id !== activeWorkspaceId);
+      localStorage.setItem('orca_workspaces', JSON.stringify(updated));
+      if (updated.length > 0) {
+        setActiveWorkspaceId(updated[0].id);
+      } else {
+        setActiveWorkspaceId('');
+      }
+      return updated;
+    });
+    setWorkspaceMenuOpen(false);
+  };
+
+  // Fill the composer from the right sidebar quick actions (git panel)
+  const handleQuickFill = (text: string) => {
+    setInput(input => input + (input ? ' ' : '') + text);
+    textareaRef.current?.focus();
+  };
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1547,12 +1548,6 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
     }, 100);
   };
 
-  const formatSeconds = (sec: number) => {
-    const m = Math.floor(sec / 60).toString().padStart(2, '0');
-    const s = (sec % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
-  };
-
   return (
     <div className="flex h-full gap-6 animate-in fade-in duration-500 w-full overflow-hidden p-6">
       
@@ -1597,195 +1592,33 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
       </div>
 
       {/* Middle conversation sidebar */}
-      <div 
-        style={{ width: `${historySidebarWidth}px` }}
-        className="relative flex flex-col gap-3.5 border-r border-[var(--color-border-base)] pr-4 h-full shrink-0 pt-1"
-      >
-        {/* Resize Handle */}
-        <div 
-          onMouseDown={handleMouseDown}
-          className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-[var(--color-primary)]/40 active:bg-[var(--color-primary)]/60 transition-colors z-30"
-          title="Drag to resize / 拖动调整大小"
-        />
-        {activeWorkspace && (
-          <div className="px-2 select-none flex flex-col gap-0.5 relative">
-            <div className="flex items-center justify-between">
-              <span className="text-base font-bold text-[var(--color-text-primary)] truncate">
-                {activeWorkspace.name}
-              </span>
-              <button 
-                onClick={() => setWorkspaceMenuOpen(!workspaceMenuOpen)}
-                className="text-gray-400 hover:text-gray-600 transition-colors p-1"
-                title={lang === 'en' ? 'Workspace Menu' : '工作区菜单'}
-              >
-                <span className="text-lg font-bold leading-none">...</span>
-              </button>
-            </div>
-            <div className="text-[11px] text-[var(--color-text-muted)] truncate font-mono" title={activeWorkspace.path}>
-              {activeWorkspace.path}
-            </div>
+      <ConversationSidebar
+        lang={lang}
+        width={historySidebarWidth}
+        onResizeMouseDown={handleMouseDown}
+        activeWorkspace={activeWorkspace || null}
+        workspaceMenuOpen={workspaceMenuOpen}
+        onToggleWorkspaceMenu={() => setWorkspaceMenuOpen(v => !v)}
+        onCloseWorkspaceMenu={() => setWorkspaceMenuOpen(false)}
+        onEditWorkspace={() => handleChooseDirectory(activeWorkspaceId)}
+        onEnableWorkspace={() => setWorkspaceMenuOpen(false)}
+        onClearNotifications={handleClearNotifications}
+        onCloseWorkspace={handleCloseWorkspace}
+        convSearch={convSearch}
+        onConvSearchChange={setConvSearch}
+        onNewChat={handleNewChat}
+        activeChat={activeChat || null}
+        filteredConversations={filteredConversations}
+        totalConversations={conversations.length}
+        loadingChats={loadingChats}
+        activeId={activeId}
+        onSelectChat={setActiveId}
+        onDeleteChat={handleDeleteChat}
+        onExportMarkdown={handleExportMarkdown}
+        onExportJSON={handleExportJSON}
+        onImportJSON={handleImportJSON}
+      />
 
-            {workspaceMenuOpen && (
-              <div 
-                className="orca-popover absolute top-8 right-0 z-50 w-40 py-1 text-left"
-                onMouseLeave={() => setWorkspaceMenuOpen(false)}
-              >
-                <div 
-                  onClick={() => {
-                    handleChooseDirectory(activeWorkspaceId);
-                    setWorkspaceMenuOpen(false);
-                  }}
-                  className="px-4 py-2 text-xs hover:bg-[var(--color-bg-hover)] text-[var(--color-text-secondary)] cursor-pointer"
-                >
-                  {lang === 'en' ? 'Edit' : '编辑'}
-                </div>
-                <div 
-                  onClick={() => {
-                    setWorkspaceMenuOpen(false);
-                  }}
-                  className="px-4 py-2 text-xs hover:bg-[var(--color-bg-hover)] text-[var(--color-text-secondary)] cursor-pointer"
-                >
-                  {lang === 'en' ? 'Enable Workspace' : '启用工作区'}
-                </div>
-                <div 
-                  onClick={() => {
-                    if (activeChat) {
-                      const systemMsg = activeChat.messages.find(m => m.role === 'system');
-                      const updated = conversations.map(c => {
-                        if (c.id === activeId) {
-                          return { ...c, messages: systemMsg ? [systemMsg] : [{ role: 'system', content: presets.standard.systemPrompt }] };
-                        }
-                        return c;
-                      });
-                      saveChatsToStorage(updated);
-                    }
-                    setWorkspaceMenuOpen(false);
-                  }}
-                  className="px-4 py-2 text-xs hover:bg-[var(--color-bg-hover)] text-[var(--color-text-secondary)] cursor-pointer"
-                >
-                  {lang === 'en' ? 'Clear Notifications' : '清除通知'}
-                </div>
-                <div className="border-t border-[var(--color-border-base)] my-1" />
-                <div 
-                  onClick={() => {
-                    setWorkspaces(prev => {
-                      const updated = prev.filter(w => w.id !== activeWorkspaceId);
-                      localStorage.setItem('orca_workspaces', JSON.stringify(updated));
-                      if (updated.length > 0) {
-                        setActiveWorkspaceId(updated[0].id);
-                      } else {
-                        setActiveWorkspaceId('');
-                      }
-                      return updated;
-                    });
-                    setWorkspaceMenuOpen(false);
-                  }}
-                  className="px-4 py-2 text-xs hover:bg-[var(--color-bg-hover)] text-red-500 cursor-pointer"
-                >
-                  {lang === 'en' ? 'Close' : '关闭'}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-        
-        {/* Conversation Search */}
-        <div className="relative">
-          <input
-            type="text"
-            value={convSearch}
-            onChange={(e) => setConvSearch(e.target.value)}
-            placeholder={lang === 'en' ? 'Search conversations...' : '搜索会话...'}
-            className="w-full bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-lg px-3 py-2 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] outline-none focus:border-[var(--color-primary)]/40 focus:ring-1 focus:ring-[var(--color-primary)]/20 transition-all"
-          />
-          {convSearch && (
-            <button
-              onClick={() => setConvSearch('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] cursor-pointer"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          )}
-        </div>
-
-        <button 
-          onClick={handleNewChat}
-          className="flex items-center justify-center gap-1.5 w-full py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-base)] hover:border-[color-mix(in_srgb,var(--color-primary)_40%,var(--color-border-base))] hover:text-[var(--color-primary)] text-[var(--color-text-primary)] text-sm font-semibold rounded-xl shadow-[var(--shadow-xs)] hover:shadow-[var(--shadow-sm)] transition-all cursor-pointer mt-1"
-        >
-          <PenSquareIcon className="w-4 h-4 opacity-70" />
-          <span>{lang === 'en' ? 'New Chat' : '新建会话'}</span>
-        </button>
-
-        {/* Export / Import row */}
-        <div className="flex gap-1 mt-1">
-          <button
-            onClick={handleExportMarkdown}
-            disabled={!activeChat}
-            title={lang === 'en' ? 'Export as Markdown' : '导出 Markdown'}
-            className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border-base)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-secondary)] text-xs rounded-lg transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <Download className="w-3 h-3" />
-            <span>MD</span>
-          </button>
-          <button
-            onClick={handleExportJSON}
-            disabled={conversations.length === 0}
-            title={lang === 'en' ? 'Export all as JSON' : '导出全部 JSON'}
-            className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border-base)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-secondary)] text-xs rounded-lg transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <Download className="w-3 h-3" />
-            <span>JSON</span>
-          </button>
-          <label
-            title={lang === 'en' ? 'Import JSON' : '导入 JSON'}
-            className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border-base)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-secondary)] text-xs rounded-lg transition-all cursor-pointer"
-          >
-            <Upload className="w-3 h-3" />
-            <span>{lang === 'en' ? 'Import' : '导入'}</span>
-            <input type="file" accept=".json" onChange={handleImportJSON} className="hidden" />
-          </label>
-        </div>
-
-        <div className="flex-1 overflow-y-auto space-y-1 pr-1 mt-2">
-          {(convSearch ? filteredConversations.filter(c => 
-            c.title.toLowerCase().includes(convSearch.toLowerCase()) ||
-            c.messages.some(m => m.content.toLowerCase().includes(convSearch.toLowerCase()))
-          ) : filteredConversations).map(chat => {
-            const isActive = chat.id === activeId;
-            const isChatLoading = loadingChats[chat.id];
-            return (
-              <div 
-                key={chat.id}
-                onClick={() => setActiveId(chat.id)}
-                className={`orca-conv-item ${isActive ? 'orca-conv-item-active' : ''} group flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium cursor-pointer transition-all ${
-                  isActive 
-                    ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)] font-semibold shadow-[var(--shadow-xs)]' 
-                    : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]/70'
-                }`}
-              >
-                <div className="truncate flex-1 pr-2">
-                  <div className="text-[13px] flex items-center gap-1.5">
-                    {isChatLoading && <Loader className="w-3 h-3 animate-spin text-[#24818d] shrink-0" />}
-                    <span className="truncate">{chat.title}</span>
-                  </div>
-                  {chat.messages.length > 0 && (
-                    <div className="text-[10px] text-[var(--color-text-muted)] truncate mt-0.5 pl-[1px]">
-                      {chat.messages[chat.messages.length - 1].content?.substring(0, 30).replace(/[\n\r]/g, ' ') || ''}
-                    </div>
-                  )}
-                </div>
-                <button 
-                  onClick={(e) => handleDeleteChat(chat.id, e)}
-                  className="opacity-0 group-hover:opacity-100 hover:text-red-500 text-gray-400 transition-opacity p-0.5"
-                  title={t('chat.delete.tooltip', lang)}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
 
       {/* Right chat window */}
       <div className="flex-1 flex flex-col h-full min-w-0">
@@ -1984,1026 +1817,92 @@ export default function Chat({ lang, isDark, toggleTheme, accent, setAccent, the
         )}
 
         {/* Input box section */}
-        <div className="shrink-0 flex flex-col gap-3">
-          
-          {/* Todo shelf — live task summary pinned above the composer (Reasonix PromptShelf-style) */}
-          {useAgent && displayTotal > 0 && (
-            <TodoShelf
-              lang={lang}
-              tasks={displayTasks}
-              done={displayDone}
-              total={displayTotal}
-              isTaskRunning={isTaskRunning}
-              collapsed={todoShelfCollapsed}
-              onToggleCollapsed={() => setTodoShelfCollapsed(v => !v)}
-            />
-          )}
-          {/* File attach chip */}
-          {attachedFile && (
-            <div className="flex items-center gap-2 bg-[var(--color-bg-hover)] border border-[var(--color-border-base)] px-3 py-1.5 rounded-xl self-start text-xs font-semibold shadow-[var(--shadow-xs)] animate-in slide-in-from-bottom-2">
-              <FileText className="w-4 h-4 text-[var(--color-primary)]" />
-              <span className="max-w-xs truncate text-[var(--color-text-primary)]">{attachedFile.name}</span>
-              <button 
-                onClick={() => setAttachedFile(null)}
-                className="hover:text-red-500 transition-colors p-0.5"
-                title={t('chat.file.delete', lang)}
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-
-          <div 
-            onClick={(e) => {
-              if (e.target !== textareaRef.current) {
-                textareaRef.current?.focus();
-              }
-            }}
-            className="orca-composer relative bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-2xl shadow-[var(--shadow-sm)] flex flex-col cursor-text"
-          >
-
-            {/* Composer input menu: @ file references & / commands */}
-            {inputMenu && (
-              <div
-                ref={inputMenuRef}
-                className="orca-popover absolute bottom-full left-0 right-0 mb-2 overflow-hidden z-40"
-              >
-                {inputMenu.type === 'at' ? (
-                  <div className="max-h-64 overflow-y-auto">
-                    <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] flex items-center justify-between border-b border-[var(--color-border-base)] bg-[var(--color-bg-hover)]/50">
-                      <span>{lang === 'en' ? 'Reference file' : '引用文件'} @</span>
-                      <span className="font-mono normal-case truncate ml-2">/{inputMenu.path || ''}</span>
-                    </div>
-                    {atFolderStack.length > 0 && (
-                      <button
-                        onClick={goBackAtFolder}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] cursor-pointer transition-colors"
-                      >
-                        <CornerUpLeft className="w-3 h-3" />
-                        <span className="font-mono">../</span>
-                      </button>
-                    )}
-                    {atLoading ? (
-                      <div className="px-3 py-3 text-xs text-[var(--color-text-muted)] flex items-center gap-2">
-                        <Loader className="w-3 h-3 animate-spin" />
-                        {lang === 'en' ? 'Loading...' : '加载中...'}
-                      </div>
-                    ) : filteredAtItems.length === 0 ? (
-                      <div className="px-3 py-3 text-xs text-[var(--color-text-muted)] italic">
-                        {lang === 'en' ? 'No matching files' : '没有匹配的文件'}
-                      </div>
-                    ) : (
-                      filteredAtItems.slice(0, 40).map(item => (
-                        <button
-                          key={item.absolutePath}
-                          onClick={() => insertAtFile(item)}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs hover:bg-[var(--color-bg-hover)] text-left cursor-pointer transition-colors"
-                        >
-                          {item.isDirectory
-                            ? <Folder className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                            : <FileText className="w-3.5 h-3.5 text-gray-400 shrink-0" />}
-                          <span className="flex-1 truncate font-mono text-[11px] text-[var(--color-text-primary)]">
-                            {item.name}{item.isDirectory ? '/' : ''}
-                          </span>
-                          {item.isDirectory && <ChevronRight className="w-3 h-3 text-[var(--color-text-muted)] shrink-0" />}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                ) : (
-                  <div className="py-1">
-                    <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border-base)]">
-                      {lang === 'en' ? 'Commands' : '快捷命令'}
-                    </div>
-                    {filteredSlashCommands.map(cmd => (
-                      <button
-                        key={cmd.key}
-                        onClick={() => applySlashCommand(cmd)}
-                        className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--color-bg-hover)] cursor-pointer transition-colors"
-                      >
-                        <span className="font-mono text-xs font-bold text-[var(--color-primary)] w-14 shrink-0">{cmd.key}</span>
-                        <span className="flex-1 truncate text-[11px] text-[var(--color-text-secondary)]">{cmd.label}</span>
-                      </button>
-                    ))}
-                    {filteredSlashCommands.length === 0 && (
-                      <div className="px-3 py-2 text-xs text-[var(--color-text-muted)] italic">
-                        {lang === 'en' ? 'No matching commands' : '没有匹配的命令'}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-            
-            {isRecording ? (
-              <div 
-                onClick={(e) => e.stopPropagation()}
-                className="absolute inset-0 bg-[var(--color-bg-card)] z-20 flex items-center justify-between px-6 py-4 rounded-2xl animate-in fade-in duration-200"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-4 h-4 rounded-full bg-red-500 animate-ping"></div>
-                  <span className="text-sm font-semibold text-red-500">{t('chat.voice.recording', lang)} {formatSeconds(recordingSeconds)}</span>
-                </div>
-                
-                {/* Audio wave mock animation */}
-                <div className="flex items-end gap-1 h-6">
-                  <div className="w-1 bg-red-500 rounded-full animate-[pulse_0.8s_infinite] h-4"></div>
-                  <div className="w-1 bg-red-500 rounded-full animate-[pulse_0.4s_infinite] h-6"></div>
-                  <div className="w-1 bg-red-500 rounded-full animate-[pulse_0.6s_infinite] h-2"></div>
-                  <div className="w-1 bg-red-500 rounded-full animate-[pulse_0.5s_infinite] h-5"></div>
-                  <div className="w-1 bg-red-500 rounded-full animate-[pulse_0.7s_infinite] h-3"></div>
-                </div>
-
-                <button 
-                  onClick={(e) => { e.stopPropagation(); handleStopRecording(); }}
-                  className="flex items-center gap-1.5 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-xl text-xs font-bold cursor-pointer"
-                >
-                  <Square className="w-3.5 h-3.5 fill-white" /> {t('chat.voice.stop', lang)}
-                </button>
-              </div>
-            ) : null}
-
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => {
-                handleInputChange(e.target.value);
-                const el = textareaRef.current;
-                if (el) {
-                  el.style.height = 'auto';
-                  el.style.height = Math.min(el.scrollHeight, 300) + 'px';
-                }
-              }}
-              onKeyDown={handleInputKeyDown}
-              onCompositionStart={() => { composingRef.current = true; }}
-              onCompositionEnd={() => { composingRef.current = false; }}
-              placeholder={t('chat.input.placeholder', lang)}
-              className="w-full bg-transparent text-[var(--color-text-primary)] p-4 pb-2 resize-none outline-none text-[15px] min-h-[80px] max-h-[300px] overflow-y-auto"
-              rows={1}
-            />
-            
-            <div className="flex items-center justify-between p-3 pt-1">
-              {loadingChats[activeId] && (
-                <div className="flex items-center gap-2 text-xs text-[var(--color-text-muted)] select-none animate-in fade-in duration-200">
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <SpinnerWords lang={lang} />
-                  </span>
-                </div>
-              )}
-              {!loadingChats[activeId] && <span />}
-              <div className="flex items-center gap-1">
-                <button 
-                  onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                  className="w-9 h-9 flex items-center justify-center rounded-xl text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-all cursor-pointer"
-                  title={t('chat.file.tooltip', lang)}
-                >
-                  <Paperclip className="w-4 h-4" />
-                </button>
-                <button 
-                  onClick={(e) => { 
-                    e.stopPropagation(); 
-                    if (loadingChats[activeId]) {
-                      if (input.trim() || attachedFile) {
-                        // No backend steer-injection exists for a running task —
-                        // silently calling handleSend() (which guards on
-                        // loadingChats) made this button a dead control. Be
-                        // honest instead: the message goes through when the
-                        // current run finishes.
-                        toast.info(lang === 'en'
-                          ? 'Agent is still running — your message will be sent when it finishes.'
-                          : 'Agent 仍在运行中，运行结束后即可发送。');
-                      } else {
-                        handleStop(); 
-                      }
-                    } else {
-                      handleSend(); 
-                    }
-                  }}
-                  disabled={!loadingChats[activeId] && ((!input.trim() && !attachedFile) || !activeChat)}
-                  className={`orca-btn-primary w-9 h-9 flex items-center justify-center rounded-xl transition-all cursor-pointer disabled:shadow-none ${
-                    loadingChats[activeId] 
-                      ? input.trim()
-                        ? ''
-                        : '!bg-red-500 animate-pulse'
-                      : (!input.trim() && !attachedFile) || !activeChat
-                        ? '!bg-[var(--color-bg-hover)] !text-[var(--color-text-muted)]'
-                        : ''
-                  }`}
-                  title={
-                    loadingChats[activeId]
-                      ? input.trim()
-                        ? (lang === 'en' ? 'Steer the running agent with your message' : '运行中发送指令')
-                        : (lang === 'en' ? 'Stop' : '停止运行')
-                      : (lang === 'en' ? 'Send' : '发送')
-                  }
-                >
-                  {loadingChats[activeId] ? (
-                    input.trim() ? (
-                      <CornerUpLeft className="w-4 h-4" />
-                    ) : (
-                      <Square className="w-4 h-4 fill-white" />
-                    )
-                  ) : (
-                    <ArrowUp className="w-5 h-5" />
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-          
-          {/* Bottom Dropdowns */}
-          {activeChat && (
-            <div ref={dropdownsRef} className="flex items-center gap-2 px-2 select-none relative z-30">
-              
-              {/* Dropdown 1: Build / Plan Selector */}
-              <div className="relative">
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveDropdown(activeDropdown === 'buildPlan' ? 'none' : 'buildPlan');
-                  }}
-                  className="orca-pill"
-                >
-                  {useAgent ? (
-                    <>
-                      <Play className="w-3 h-3 text-emerald-500 fill-emerald-500/20" />
-                      <span>{lang === 'en' ? 'Build Mode' : 'Build 执行'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Eye className="w-3 h-3 text-blue-500" />
-                      <span>{lang === 'en' ? 'Plan Mode' : 'Plan 规划'}</span>
-                    </>
-                  )}
-                  <ChevronDown className="w-3 h-3 opacity-60" />
-                </button>
-                {activeDropdown === 'buildPlan' && (
-                  <div 
-                    onClick={(e) => e.stopPropagation()}
-                    className="orca-popover absolute bottom-full left-0 mb-2 w-40 py-1 overflow-hidden"
-                  >
-                    <div 
-                      onClick={() => {
-                        setUseAgent(false);
-                        setActiveDropdown('none');
-                      }} 
-                      className={`px-3 py-2 text-xs hover:bg-[var(--color-bg-hover)] cursor-pointer flex items-center gap-2 transition-colors ${!useAgent ? 'bg-[var(--color-bg-hover)] font-bold text-[var(--color-primary)]' : 'text-[var(--color-text-primary)]'}`}
-                    >
-                      <Eye className="w-3.5 h-3.5 text-blue-500" />
-                      <span>{lang === 'en' ? 'Plan Mode' : 'Plan 规划'}</span>
-                      {!useAgent && <Check className="w-3.5 h-3.5 ml-auto shrink-0" />}
-                    </div>
-                    <div 
-                      onClick={() => {
-                        setUseAgent(true);
-                        setActiveDropdown('none');
-                      }} 
-                      className={`px-3 py-2 text-xs hover:bg-[var(--color-bg-hover)] cursor-pointer flex items-center gap-2 transition-colors ${useAgent ? 'bg-[var(--color-bg-hover)] font-bold text-[var(--color-primary)]' : 'text-[var(--color-text-primary)]'}`}
-                    >
-                      <Play className="w-3.5 h-3.5 text-emerald-500 fill-emerald-500/20" />
-                      <span>{lang === 'en' ? 'Build Mode' : 'Build 执行'}</span>
-                      {useAgent && <Check className="w-3.5 h-3.5 ml-auto shrink-0" />}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Dropdown 2: Model Selector */}
-              <div className="relative">
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveDropdown(activeDropdown === 'model' ? 'none' : 'model');
-                  }}
-                  className="orca-pill"
-                >
-                  <Sparkles className="w-3 h-3 text-amber-500 fill-amber-500/20" />
-                  <span className="max-w-[150px] truncate">{displayModelLabel(models, activeChat.model)}</span>
-                  <ChevronDown className="w-3 h-3 opacity-60" />
-                </button>
-                {activeDropdown === 'model' && (
-                  <div 
-                    onClick={(e) => e.stopPropagation()}
-                    className="orca-popover absolute bottom-full left-0 mb-2 w-72 py-2 max-h-80 overflow-y-auto"
-                  >
-                    {models.length === 0 ? (
-                      <div className="px-3 py-2 text-xs text-[var(--color-text-muted)] italic">{t('chat.models.empty', lang)}</div>
-                    ) : (
-                      Object.entries(modelsByProvider).map(([providerName, providerModels]) => (
-                        <div key={providerName} className="mb-2 last:mb-0">
-                          <div className="px-3 py-1.5 text-[11px] font-semibold text-[#a06a55] select-none bg-slate-50/50 dark:bg-slate-800/30">
-                            {providerName}
-                          </div>
-                          {providerModels.map(m => {
-                            // Use the provider-qualified id for identity so the
-                            // same model id served by two providers selects
-                            // exactly one row (and routes to that provider).
-                            const q = qualId(m);
-                            const isSelected = activeChat.model === q;
-                            return (
-                              <div 
-                                key={q} 
-                                onClick={() => {
-                                  handleModelChange(q);
-                                  setActiveDropdown('none');
-                                }} 
-                                className={`px-3 py-2 text-xs hover:bg-[var(--color-bg-hover)] cursor-pointer flex justify-between items-center transition-colors ${isSelected ? 'bg-[var(--color-bg-hover)] font-bold text-[var(--color-primary)]' : 'text-[var(--color-text-primary)]'}`}
-                              >
-                                <span className="truncate flex-1 pr-2">{m.name || m.id}</span>
-                                {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Dropdown 3: Quality Selector (EffortSwitcher-style) */}
-              <div className="relative">
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveDropdown(activeDropdown === 'quality' ? 'none' : 'quality');
-                  }}
-                  className="orca-pill"
-                >
-                  <span>{(qualities[activeChat.quality] || qualities.high).name}</span>
-                  <span className="text-[9.5px] font-mono px-1 py-0.5 rounded bg-[var(--color-bg-card)] text-[var(--color-text-muted)] border border-[var(--color-border-base)]">
-                    T={(qualities[activeChat.quality] || qualities.high).temp}
-                  </span>
-                  <ChevronDown className="w-3 h-3 opacity-60" />
-                </button>
-                {activeDropdown === 'quality' && (
-                  <div 
-                    onClick={(e) => e.stopPropagation()}
-                    className="orca-popover absolute bottom-full left-0 mb-2 w-44 py-1 overflow-hidden"
-                  >
-                    {Object.entries(qualities).map(([key, val]) => {
-                      const isSelected = activeChat.quality === key;
-                      return (
-                        <div 
-                          key={key} 
-                          onClick={() => {
-                            handleQualityChange(key);
-                            setActiveDropdown('none');
-                          }} 
-                          className={`px-3 py-2 text-xs hover:bg-[var(--color-bg-hover)] cursor-pointer flex justify-between items-center transition-colors ${isSelected ? 'bg-[var(--color-bg-hover)] font-bold text-[var(--color-primary)]' : 'text-[var(--color-text-primary)]'}`}
-                        >
-                          <span className="flex items-center gap-1.5">
-                            {val.name}
-                            <span className="text-[9.5px] font-mono text-[var(--color-text-muted)]">T={val.temp}</span>
-                          </span>
-                          {isSelected && <Check className="w-3.5 h-3.5" />}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Dropdown 4: Ready Tools Indicator */}
-              <div className="relative">
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveDropdown(activeDropdown === 'readyTools' ? 'none' : 'readyTools');
-                  }}
-                  className="orca-pill border-[color-mix(in_srgb,var(--color-primary)_25%,var(--color-border-base))]"
-                >
-                  <span className="w-2 h-2 rounded-full bg-[var(--color-primary)] shadow-[0_0_6px_var(--color-primary)]" />
-                  <span>{lang === 'en' ? `Tools (${skills.length + mcpTools.length})` : `就绪工具 (${skills.length + mcpTools.length})`}</span>
-                  <ChevronDown className="w-3 h-3 opacity-60" />
-                </button>
-                {activeDropdown === 'readyTools' && (
-                  <div 
-                    onClick={(e) => e.stopPropagation()}
-                    className="orca-popover absolute bottom-full left-0 mb-2 w-80 py-3 px-4 max-h-[350px] overflow-y-auto"
-                  >
-                    <div className="flex items-center justify-between pb-2 mb-2 border-b border-[var(--color-border-base)]">
-                      <span className="text-xs font-bold text-[var(--color-text-primary)]">{lang === 'en' ? 'Active Tools & Skills' : '已就绪智能体工具'}</span>
-                      <span className="text-[10px] text-emerald-500 font-mono bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/25">ONLINE</span>
-                    </div>
-
-                    {/* Section 1: Skills */}
-                    <div className="mb-3">
-                      <div className="text-[10.5px] font-bold text-amber-500 uppercase tracking-wider mb-1 flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                        {lang === 'en' ? `Skills (${skills.length})` : `本地技能库 (${skills.length})`}
-                      </div>
-                      {skills.length === 0 ? (
-                        <div className="text-[11px] text-[var(--color-text-muted)] italic pl-2.5">{lang === 'en' ? 'No local skills loaded.' : '暂无加载本地技能'}</div>
-                      ) : (
-                        <div className="flex flex-col gap-1 pl-2">
-                          <div
-                            onClick={() => setActiveSkillId('')}
-                            className={`group flex flex-col p-1.5 rounded cursor-pointer transition-colors border ${activeSkillId === '' ? 'border-[var(--color-primary)]/30 bg-[var(--color-primary)]/5' : 'border-transparent hover:bg-[var(--color-bg-hover)]'}`}
-                          >
-                            <span className="text-xs font-semibold text-[var(--color-text-muted)]">{lang === 'en' ? 'No skill (Normal Chat)' : '无技能 (常规对话)'}</span>
-                          </div>
-                          {skills.slice(0, 15).map((s: any) => (
-                            <div
-                              key={s.id}
-                              onClick={() => setActiveSkillId(s.id)}
-                              className={`group flex flex-col p-1.5 rounded cursor-pointer transition-colors border ${activeSkillId === s.id ? 'border-[var(--color-primary)]/30 bg-[var(--color-primary)]/5' : 'border-transparent hover:bg-[var(--color-bg-hover)]'}`}
-                            >
-                              <span className="text-xs font-mono font-bold text-[var(--color-text-primary)]">{s.name}</span>
-                              <span className="text-[10.5px] text-[var(--color-text-muted)] line-clamp-1 group-hover:line-clamp-none transition-all duration-200">{s.description || 'No description'}</span>
-                            </div>
-                          ))}
-                          {skills.length > 15 && (
-                            <div className="text-[10px] text-[var(--color-text-muted)] italic pl-1 pt-1">
-                              {lang === 'en' ? `... and ${skills.length - 15} more skills` : `... 以及另外 ${skills.length - 15} 个技能`}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Section 2: MCP Tools */}
-                    <div>
-                      <div className="text-[10.5px] font-bold text-sky-500 uppercase tracking-wider mb-1 flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-sky-500"></span>
-                        {lang === 'en' ? `MCP Tools (${mcpTools.length})` : `MCP 外部工具 (${mcpTools.length})`}
-                      </div>
-                      {mcpTools.length === 0 ? (
-                        <div className="text-[11px] text-[var(--color-text-muted)] italic pl-2.5">{lang === 'en' ? 'No MCP tools connected.' : '未连接 MCP 外部工具'}</div>
-                      ) : (
-                        <div className="flex flex-col gap-1.5 pl-2 max-h-[150px] overflow-y-auto">
-                          {mcpTools.map((t: any) => (
-                            <div key={`${t.serverName}_${t.name}`} className="group flex flex-col p-1 rounded hover:bg-[var(--color-bg-hover)] transition-colors border-l-2 border-sky-500/30 pl-2">
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-mono font-bold text-[var(--color-text-primary)]">{t.name}</span>
-                                <span className="text-[9px] text-sky-500 font-bold bg-sky-500/10 px-1 py-0.2 rounded border border-sky-500/15">{t.serverName}</span>
-                              </div>
-                              <span className="text-[10.5px] text-[var(--color-text-muted)] line-clamp-1 group-hover:line-clamp-none transition-all duration-200">{t.description || 'No description'}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Circular Context Indicator */}
-              <div className="relative group">
-                <button 
-                  type="button"
-                  className="orca-pill"
-                  title={`${lang === 'en' ? 'Context Window' : '上下文窗口'}: ${contextTokens.used.toLocaleString()} / ${contextTokens.total.toLocaleString()} tokens (${contextTokens.percent}%)`}
-                >
-                  <div className="relative w-4 h-4 flex items-center justify-center">
-                    <svg className="w-full h-full transform -rotate-90">
-                      <circle
-                        cx="8"
-                        cy="8"
-                        r="6"
-                        className="stroke-gray-200 dark:stroke-slate-700"
-                        strokeWidth="2"
-                        fill="none"
-                      />
-                      <circle
-                        cx="8"
-                        cy="8"
-                        r="6"
-                        className={`transition-all duration-500 ${
-                          contextTokens.percent > 85 ? 'stroke-red-500' :
-                          contextTokens.percent > 60 ? 'stroke-yellow-500' :
-                          'stroke-emerald-500'
-                        }`}
-                        strokeWidth="2"
-                        fill="none"
-                        strokeDasharray={2 * Math.PI * 6}
-                        strokeDashoffset={2 * Math.PI * 6 * (1 - contextTokens.percent / 100)}
-                      />
-                    </svg>
-                  </div>
-                  <span className="font-mono text-[10.5px]">{contextTokens.percent}%</span>
-                </button>
-                
-                {/* Tooltip on Hover */}
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-slate-900 text-white text-[10px] rounded-lg py-1.5 px-2.5 whitespace-nowrap z-50 shadow-md font-mono select-text text-left">
-                  <div>Used: {contextTokens.used.toLocaleString()}</div>
-                  <div>Total: {contextTokens.total.toLocaleString()}</div>
-                  {cacheRate !== null && (
-                    <div className={`mt-1 ${cacheRate >= 50 ? 'text-emerald-400' : cacheRate >= 20 ? 'text-yellow-400' : 'text-red-400'}`}>
-                      Cache hit: {cacheRate}%
-                    </div>
-                  )}
-                  {contextTokens.percent > 85 && (
-                    <div className="text-red-400 mt-1">{lang === 'en' ? '⚠️ Near Limit' : '⚠️ 接近上限'}</div>
-                  )}
-                </div>
-              </div>
-
-            </div>
-          )}
-        </div>
+        <Composer
+          lang={lang}
+          useAgent={useAgent}
+          input={input}
+          attachedFile={attachedFile}
+          activeChat={activeChat || null}
+          loading={!!loadingChats[activeId]}
+          contextTokens={contextTokens}
+          cacheRate={cacheRate}
+          models={models}
+          modelsByProvider={modelsByProvider}
+          qualities={qualities}
+          skills={skills}
+          mcpTools={mcpTools}
+          activeSkillId={activeSkillId}
+          inputMenu={inputMenu}
+          atFolderStack={atFolderStack}
+          atLoading={atLoading}
+          filteredAtItems={filteredAtItems}
+          filteredSlashCommands={filteredSlashCommands}
+          todoShelf={useAgent && displayTotal > 0 ? { tasks: displayTasks, done: displayDone, total: displayTotal, running: isTaskRunning, collapsed: todoShelfCollapsed } : null}
+          isRecording={isRecording}
+          recordingSeconds={recordingSeconds}
+          activeDropdown={activeDropdown}
+          textareaRef={textareaRef}
+          inputMenuRef={inputMenuRef}
+          dropdownsRef={dropdownsRef}
+          composingRef={composingRef}
+          toast={toast}
+          onInputChange={handleInputChange}
+          onKeyDown={handleInputKeyDown}
+          onSend={handleSend}
+          onStop={handleStop}
+          onRemoveAttachedFile={() => setAttachedFile(null)}
+          onAttachFileClick={() => fileInputRef.current?.click()}
+          onGoBackAtFolder={goBackAtFolder}
+          onInsertAtFile={insertAtFile}
+          onApplySlashCommand={applySlashCommand}
+          onStopRecording={handleStopRecording}
+          onToggleTodoShelf={() => setTodoShelfCollapsed(v => !v)}
+          onSetUseAgent={setUseAgent}
+          onModelChange={handleModelChange}
+          onQualityChange={handleQualityChange}
+          onSetSkill={setActiveSkillId}
+          onSetDropdown={setActiveDropdown}
+        />
       </div>
 
       {/* Right Sidebar Panel */}
       {rightSidebarOpen && (
-        <div
-          style={{ width: `${rightSidebarWidth}px` }}
-          className="relative flex flex-col border-l border-[var(--color-border-base)] pl-4 h-full shrink-0"
-        >
-          {/* Resize Handle */}
-          <div
-            onMouseDown={handleRightSidebarMouseDown}
-            className="absolute top-0 left-0 w-1.5 h-full cursor-col-resize hover:bg-[var(--color-primary)]/40 active:bg-[var(--color-primary)]/60 transition-colors z-30"
-            title="Drag to resize"
-          />
-
-          {/* Sidebar Header with Tabs & Collapse */}
-          <div className="flex items-center justify-between pb-2 mb-2 border-b border-[var(--color-border-base)] shrink-0">
-            <div className="flex items-center gap-0.5 bg-[var(--color-bg-hover)]/70 rounded-xl p-0.5">
-              <button
-                onClick={() => setRightSidebarTab('tasks')}
-                className={`px-2.5 py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
-                  rightSidebarTab === 'tasks'
-                    ? 'bg-[var(--color-bg-card)] text-[var(--color-text-primary)] shadow-[var(--shadow-sm)]'
-                    : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
-                }`}
-              >
-                <Activity className="w-3 h-3" />
-                <span>{lang === 'en' ? 'Tasks' : '任务'}</span>
-                {displayTotal > 0 && (
-                  <span className={`text-[10px] font-bold px-1 rounded ${
-                    isTaskRunning ? 'bg-blue-500 text-white' : 'bg-emerald-500 text-white'
-                  }`}>
-                    {displayDone}/{displayTotal}
-                  </span>
-                )}
-              </button>
-              <button
-                onClick={() => setRightSidebarTab('files')}
-                className={`px-2.5 py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
-                  rightSidebarTab === 'files'
-                    ? 'bg-[var(--color-bg-card)] text-[var(--color-text-primary)] shadow-[var(--shadow-sm)]'
-                    : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
-                }`}
-              >
-                <FileText className="w-3 h-3" />
-                <span>{lang === 'en' ? 'Files' : '文件'}</span>
-                {modifiedFiles.length > 0 && (
-                  <span className="text-[10px] font-bold px-1 rounded bg-amber-500 text-white">{modifiedFiles.length}</span>
-                )}
-              </button>
-              <button
-                onClick={() => setRightSidebarTab('git')}
-                className={`px-2.5 py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
-                  rightSidebarTab === 'git'
-                    ? 'bg-[var(--color-bg-card)] text-[var(--color-text-primary)] shadow-[var(--shadow-sm)]'
-                    : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
-                }`}
-              >
-                <GitBranch className="w-3 h-3" />
-                <span>Git</span>
-                {gitInfo.status === 'dirty' && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                )}
-              </button>
-              <button
-                onClick={() => setRightSidebarTab('terminal')}
-                className={`px-2.5 py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer flex items-center gap-1 ${
-                  rightSidebarTab === 'terminal'
-                    ? 'bg-[var(--color-bg-card)] text-[var(--color-text-primary)] shadow-[var(--shadow-sm)]'
-                    : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
-                }`}
-              >
-                <Terminal className="w-3 h-3 text-emerald-500" />
-                <span>{lang === 'en' ? 'Terminal' : '终端'}</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Tab Content */}
-          <div className="flex-1 overflow-y-auto">
-            {/* Tasks Tab */}
-            {rightSidebarTab === 'tasks' && (
-              <div className="space-y-3">
-                {displayTotal === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-[200px] text-center px-4">
-                    <Activity className="w-10 h-10 text-[var(--color-text-muted)] mb-3 opacity-40" />
-                    <p className="text-xs text-[var(--color-text-muted)]">
-                      {lang === 'en'
-                        ? 'No active tasks. Start a build session to see tasks here.'
-                        : '暂无活跃任务。启动 Build 模式后会在此显示任务列表。'}
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    {/* Progress Bar */}
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[10px] text-[var(--color-text-muted)]">
-                        <span>{lang === 'en' ? 'Overall Progress' : '总体进度'}</span>
-                        {liveTaskPhase && (
-                          <span className="font-mono uppercase tracking-wider text-[var(--color-primary)]">{liveTaskPhase}</span>
-                        )}
-                        <span className="font-mono">{displayProgress}%</span>
-                      </div>
-                      <div className="w-full h-2 bg-[var(--color-bg-hover)] rounded-full overflow-hidden">
-                        <div
-                          className="orca-progress-bar h-full rounded-full transition-all duration-700"
-                          style={{ width: `${displayProgress}%` }}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Task Items — two-level plan: phases (level 0) with
-                        indented sub-steps (level 1) */}
-                    <div className="space-y-0.5">
-                      {displayTasks.map((task: any, idx: number) => {
-                        const isPhase = task.level === 0;
-                        const isSub = task.level === 1;
-                        const status = task.status || 'pending';
-                        const isCurrent = status === 'in_progress';
-                        const label = isCurrent && task.activeForm ? task.activeForm : task.content;
-                        return (
-                          <div
-                            key={`${isPhase ? 'p' : 's'}-${idx}`}
-                            className={`flex items-start gap-2.5 p-2 rounded-lg text-xs transition-colors ${
-                              isSub ? 'ml-4' : ''
-                            } ${
-                              isCurrent
-                                ? 'bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30'
-                                : 'hover:bg-[var(--color-bg-hover)]'
-                            }`}
-                          >
-                            <div className="mt-0.5 shrink-0">
-                              {status === 'completed' && (
-                                <CheckCircle className="w-4 h-4 text-emerald-500" />
-                              )}
-                              {isCurrent && (
-                                <Loader className="w-4 h-4 text-blue-500 animate-spin" />
-                              )}
-                              {status === 'pending' && (
-                                <Clock className={`w-4 h-4 ${isPhase ? 'text-[var(--color-text-muted)]' : 'text-gray-400'}`} />
-                              )}
-                            </div>
-                            <span className={`flex-1 leading-relaxed ${
-                              isPhase ? 'font-bold text-[var(--color-text-primary)]' : ''
-                            } ${
-                              status === 'completed'
-                                ? 'text-[var(--color-text-muted)] line-through'
-                                : isCurrent
-                                  ? 'text-blue-700 dark:text-blue-300 font-semibold'
-                                  : 'text-[var(--color-text-secondary)]'
-                            }`}>
-                              {label}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Files / Explorer Tab */}
-            {rightSidebarTab === 'files' && (
-              <div className="flex flex-col h-full space-y-4 px-1 pb-4">
-                {/* File Search */}
-                <div className="relative shrink-0 mx-1">
-                  <span className="absolute inset-y-0 left-0 flex items-center pl-2.5 pointer-events-none text-[var(--color-text-muted)]">
-                    <Search className="w-3.5 h-3.5" />
-                  </span>
-                  <input
-                    type="text"
-                    value={fileSearchQuery}
-                    onChange={(e) => setFileSearchQuery(e.target.value)}
-                    placeholder={lang === 'en' ? 'Search files...' : '搜索文件...'}
-                    className="w-full bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-lg pl-8 pr-7 py-1.5 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] outline-none focus:border-[var(--color-primary)]/40 focus:ring-1 focus:ring-[var(--color-primary)]/20 transition-all font-sans"
-                  />
-                  {fileSearchQuery && (
-                    <button
-                      onClick={() => setFileSearchQuery('')}
-                      className="absolute inset-y-0 right-0 flex items-center pr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  )}
-                </div>
-
-                {/* Session Modified Files List */}
-                {!fileSearchQuery && (
-                  <div className="border-b border-[var(--color-border-base)] pb-3 shrink-0 mx-1">
-                    <div 
-                      onClick={() => setModifiedFilesExpanded(!modifiedFilesExpanded)}
-                      className="flex items-center justify-between text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider cursor-pointer hover:text-[var(--color-text-primary)] select-none mb-1.5"
-                    >
-                      <div className="flex items-center gap-1">
-                        <ChevronDown className={`w-3 h-3 transition-transform ${modifiedFilesExpanded ? '' : '-rotate-90'}`} />
-                        <span>{lang === 'en' ? 'Modified in Session' : '本会话已修改'}</span>
-                        {modifiedFiles.length > 0 && (
-                          <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500 text-white font-mono ml-1">
-                            {modifiedFiles.length}
-                          </span>
-                        )}
-                      </div>
-                      {modifiedFiles.length > 0 && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setModifiedFiles([]);
-                          }}
-                          className="text-[10px] text-gray-400 hover:text-red-500 transition-colors cursor-pointer capitalize font-semibold normal-case"
-                        >
-                          {lang === 'en' ? 'Clear' : '清除'}
-                        </button>
-                      )}
-                    </div>
-
-                    {modifiedFilesExpanded && (
-                      <div className="space-y-0.5 max-h-[140px] overflow-y-auto pr-0.5">
-                        {modifiedFiles.length === 0 ? (
-                          <div className="text-[11px] text-[var(--color-text-muted)] italic py-1 px-4">
-                            {lang === 'en' ? 'No files modified yet' : '暂无修改文件'}
-                          </div>
-                        ) : (
-                          modifiedFiles.map((file, idx) => (
-                            <div
-                              key={idx}
-                              onClick={() => handleOpenFile(file.path)}
-                              className="flex items-center gap-2 p-1.5 rounded-lg text-xs hover:bg-[var(--color-bg-hover)] transition-colors cursor-pointer group/file"
-                            >
-                              <FileText className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                              <div className="flex-1 min-w-0">
-                                <div className="font-mono text-[10.5px] text-[var(--color-text-primary)] truncate group-hover/file:text-[var(--color-primary)] transition-colors" title={file.path}>
-                                  {file.path}
-                                </div>
-                                <div className="flex items-center gap-1.5 mt-0.5">
-                                  <span className="text-[9px] px-1 py-0.1 rounded bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-semibold font-mono">
-                                    {file.action}
-                                  </span>
-                                  <span className="text-[9px] text-[var(--color-text-muted)]">{file.time}</span>
-                                </div>
-                              </div>
-                              <Eye className="w-3 h-3 text-gray-400 opacity-0 group-hover/file:opacity-100 transition-opacity" />
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Workspace Files Explorer */}
-                <div className="flex-1 flex flex-col min-h-0 mx-1">
-                  <div 
-                    onClick={() => setWorkspaceFilesExpanded(!workspaceFilesExpanded)}
-                    className="flex items-center justify-between text-[11px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider cursor-pointer hover:text-[var(--color-text-primary)] select-none mb-1.5"
-                  >
-                    <div className="flex items-center gap-1">
-                      <ChevronDown className={`w-3 h-3 transition-transform ${workspaceFilesExpanded ? '' : '-rotate-90'}`} />
-                      <span>{lang === 'en' ? 'Workspace Explorer' : '项目资源管理器'}</span>
-                    </div>
-                  </div>
-
-                  {workspaceFilesExpanded && (
-                    <div className="flex-1 overflow-y-auto pr-0.5 space-y-0.5 font-mono text-[11.5px] select-none">
-                      {getFilteredItems().length === 0 ? (
-                        <div className="text-[11px] text-[var(--color-text-muted)] italic py-2 px-4">
-                          {lang === 'en' ? 'No files found' : '没有找到文件'}
-                        </div>
-                      ) : (
-                        getFilteredItems().map(({ item, depth }) => {
-                          const isExpanded = !!expandedPaths[item.relativePath];
-                          const isLoading = !!loadingFolders[item.relativePath];
-                          
-                          let iconColor = 'text-gray-400 dark:text-gray-500';
-                          if (item.isDirectory) {
-                            iconColor = 'text-blue-500 dark:text-blue-400';
-                          } else {
-                            const ext = item.name.split('.').pop()?.toLowerCase();
-                            if (ext === 'js' || ext === 'ts' || ext === 'tsx' || ext === 'jsx') {
-                              iconColor = 'text-amber-500 dark:text-amber-400';
-                            } else if (ext === 'css' || ext === 'html' || ext === 'scss') {
-                              iconColor = 'text-sky-500 dark:text-sky-400';
-                            } else if (ext === 'py' || ext === 'go' || ext === 'rs') {
-                              iconColor = 'text-emerald-500 dark:text-emerald-400';
-                            } else if (ext === 'md' || ext === 'json') {
-                              iconColor = 'text-purple-500 dark:text-purple-400';
-                            }
-                          }
-
-                          return (
-                            <div
-                              key={item.absolutePath}
-                              style={{ paddingLeft: `${depth * 10 + 4}px` }}
-                              onClick={() => item.isDirectory ? toggleFolder(item.relativePath) : handleOpenFile(item.absolutePath)}
-                              className="flex items-center justify-between py-1 px-1.5 rounded hover:bg-[var(--color-bg-hover)] transition-colors cursor-pointer group/item"
-                            >
-                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                                <span className="shrink-0">
-                                  {item.isDirectory ? (
-                                    isExpanded ? (
-                                      <FolderOpen className={`w-3.5 h-3.5 ${iconColor}`} />
-                                    ) : (
-                                      <Folder className={`w-3.5 h-3.5 ${iconColor}`} />
-                                    )
-                                  ) : (
-                                    <FileText className={`w-3.5 h-3.5 ${iconColor}`} />
-                                  )}
-                                </span>
-                                
-                                <span className="truncate text-[var(--color-text-secondary)] group-hover/item:text-[var(--color-text-primary)] transition-colors" title={item.name}>
-                                  {item.name}
-                                </span>
-                                
-                                {isLoading && (
-                                  <Loader className="w-3 h-3 text-[var(--color-primary)] animate-spin shrink-0" />
-                                )}
-                              </div>
-
-                              {!item.isDirectory && (
-                                <div className="flex items-center gap-1 opacity-0 group-hover/item:opacity-100 transition-opacity pl-1 shrink-0">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleAttachFile(item);
-                                    }}
-                                    className="p-1 rounded hover:bg-[var(--color-bg-card)] text-[var(--color-text-muted)] hover:text-[var(--color-primary)] transition-colors cursor-pointer"
-                                    title={lang === 'en' ? 'Attach to prompt context' : '添加到输入上下文'}
-                                  >
-                                    <Paperclip className="w-3 h-3" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleOpenFile(item.absolutePath);
-                                    }}
-                                    className="p-1 rounded hover:bg-[var(--color-bg-card)] text-[var(--color-text-muted)] hover:text-emerald-500 transition-colors cursor-pointer"
-                                    title={lang === 'en' ? 'Open file locally' : '本地打开文件'}
-                                  >
-                                    <Eye className="w-3 h-3" />
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Git Tab */}
-            {rightSidebarTab === 'git' && (
-              <div className="space-y-4">
-                {gitInfo.status === 'no-repo' ? (
-                  <div className="flex flex-col items-center justify-center h-[200px] text-center px-4">
-                    <FolderGit2 className="w-10 h-10 text-[var(--color-text-muted)] mb-3 opacity-40" />
-                    <p className="text-xs text-[var(--color-text-muted)]">
-                      {lang === 'en' ? 'Not a git repository.' : '当前工作区不是 Git 仓库。'}
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    {/* Branch Info */}
-                    <div className="bg-[var(--color-bg-hover)] rounded-xl p-3 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <GitBranch className="w-4 h-4 text-[var(--color-primary)]" />
-                        <span className="text-sm font-bold font-mono text-[var(--color-text-primary)]">{gitInfo.branch}</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 text-xs">
-                        <div className="flex flex-col">
-                          <span className="text-[var(--color-text-muted)]">{lang === 'en' ? 'Modified' : '已修改'}</span>
-                          <span className={`font-bold font-mono text-sm ${gitInfo.changes > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
-                            {gitInfo.changes}
-                          </span>
-                        </div>
-                        <div className="flex flex-col">
-                          <span className="text-[var(--color-text-muted)]">{lang === 'en' ? 'Untracked' : '未跟踪'}</span>
-                          <span className={`font-bold font-mono text-sm ${gitInfo.untracked > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
-                            {gitInfo.untracked}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Status Badge */}
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
-                        gitInfo.status === 'clean'
-                          ? 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300'
-                          : 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300'
-                      }`}>
-                        {gitInfo.status === 'clean' ? '✓ Clean' : '● Dirty'}
-                      </span>
-                      <span className="text-[10px] text-[var(--color-text-muted)] truncate max-w-[200px]" title={gitInfo.lastCommit}>
-                        {lang === 'en' ? 'Last commit' : '最近提交'}: {gitInfo.lastCommit}
-                      </span>
-                    </div>
-
-                    {/* Modified Files List in Git */}
-                    {gitInfo.modifiedFiles && gitInfo.modifiedFiles.length > 0 && (
-                      <div className="space-y-1.5 mt-2">
-                        <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider block">
-                          {lang === 'en' ? 'Changed Files' : '文件改动列表'}
-                        </span>
-                        <div className="max-h-36 overflow-y-auto space-y-1 pr-1 border border-[var(--color-border-base)] rounded-lg p-1.5 bg-white/40 dark:bg-slate-900/40">
-                          {gitInfo.modifiedFiles.map((file, idx) => {
-                            const isUntracked = file.status.includes('?');
-                            const isDeleted = file.status.includes('D');
-                            const isAdded = file.status.includes('A');
-                            
-                            let badgeColor = 'bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300';
-                            if (isUntracked) badgeColor = 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
-                            else if (isDeleted) badgeColor = 'bg-red-100 dark:bg-red-900/20 text-red-700 dark:text-red-300';
-                            else if (isAdded) badgeColor = 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300';
-                            
-                            return (
-                              <div 
-                                key={idx} 
-                                onClick={() => handleOpenFile(file.filepath)}
-                                className="flex items-center justify-between text-[11px] font-mono py-1 px-1.5 hover:bg-[var(--color-bg-hover)] rounded cursor-pointer group/gitfile"
-                              >
-                                <span className="truncate flex-1 text-[var(--color-text-secondary)] mr-2 group-hover/gitfile:text-[var(--color-primary)] transition-colors" title={file.filepath}>
-                                  {file.filepath}
-                                </span>
-                                <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold shrink-0 ${badgeColor}`}>
-                                  {file.status.trim() || 'M'}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Git Commit Form */}
-                    {gitInfo.status === 'dirty' && (
-                      <form onSubmit={handleGitCommit} className="space-y-2 border-t border-[var(--color-border-base)] pt-3 mt-2">
-                        <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider block">
-                          {lang === 'en' ? 'Commit Changes' : '提交改动'}
-                        </span>
-                        <input
-                          type="text"
-                          value={commitMessage}
-                          onChange={(e) => setCommitMessage(e.target.value)}
-                          placeholder={lang === 'en' ? 'Commit message...' : '提交说明...'}
-                          required
-                          className="w-full bg-[var(--color-bg-card)] border border-[var(--color-border-base)] rounded-lg px-2.5 py-1.5 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] outline-none focus:border-[var(--color-primary)]/40 focus:ring-1 focus:ring-[var(--color-primary)]/20 transition-all font-sans"
-                        />
-                        <button
-                          type="submit"
-                          disabled={committing}
-                          className="w-full py-2 text-xs font-semibold rounded-lg bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-400 text-white transition-colors cursor-pointer text-center shadow-sm"
-                        >
-                          {committing 
-                            ? (lang === 'en' ? 'Committing...' : '提交中...') 
-                            : (lang === 'en' ? 'Stage & Commit' : '暂存并提交')}
-                        </button>
-                      </form>
-                    )}
-
-                    {/* Quick Actions */}
-                    <div className="flex gap-2 border-t border-[var(--color-border-base)] pt-3 mt-2">
-                      <button
-                        onClick={() => {
-                          setInput(input => input + (input ? ' ' : '') + (lang === 'en' ? 'Show me the git diff' : '请帮我查看当前的 git diff'));
-                          textareaRef.current?.focus();
-                        }}
-                        className="flex-1 py-2 text-xs font-semibold rounded-lg bg-[var(--color-bg-hover)] border border-[var(--color-border-base)] hover:bg-white dark:hover:bg-slate-800 text-[var(--color-text-primary)] transition-colors cursor-pointer text-center"
-                        title={lang === 'en' ? 'Ask agent to show git diff' : '请智能体显示 git diff'}
-                      >
-                        {lang === 'en' ? 'Show Diff' : '查看改动'}
-                      </button>
-                      <button
-                        onClick={() => {
-                          setInput(input => input + (input ? ' ' : '') + (lang === 'en' ? 'Summarize the recent git changes and suggest a commit message' : '请总结最近的 git 改动并建议一个 commit message'));
-                          textareaRef.current?.focus();
-                        }}
-                        className="flex-1 py-2 text-xs font-semibold rounded-lg bg-[var(--color-primary)]/10 border border-[var(--color-primary)]/20 hover:bg-[var(--color-primary)]/20 text-[var(--color-primary)] transition-colors cursor-pointer text-center"
-                        title={lang === 'en' ? 'Ask agent for commit suggestion' : '请智能体建议 commit'}
-                      >
-                        {lang === 'en' ? 'Suggest Commit' : '提交建议'}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Terminal Tab */}
-            {rightSidebarTab === 'terminal' && (
-              <div className="h-full">
-                <TerminalPanel taskId={activeTaskId} lang={lang} />
-              </div>
-            )}
-          </div>
-        </div>
+        <RightSidebar
+          lang={lang}
+          width={rightSidebarWidth}
+          onResizeMouseDown={handleRightSidebarMouseDown}
+          tab={rightSidebarTab}
+          onTabChange={setRightSidebarTab}
+          displayTasks={displayTasks}
+          displayDone={displayDone}
+          displayTotal={displayTotal}
+          displayProgress={displayProgress}
+          liveTaskPhase={liveTaskPhase}
+          isTaskRunning={isTaskRunning}
+          modifiedFiles={modifiedFiles}
+          onClearModifiedFiles={() => setModifiedFiles([])}
+          modifiedFilesExpanded={modifiedFilesExpanded}
+          onToggleModifiedFiles={() => setModifiedFilesExpanded(v => !v)}
+          fileSearchQuery={fileSearchQuery}
+          onFileSearchChange={setFileSearchQuery}
+          onOpenFile={handleOpenFile}
+          workspaceFilesExpanded={workspaceFilesExpanded}
+          onToggleWorkspaceFiles={() => setWorkspaceFilesExpanded(v => !v)}
+          workspaceItems={getFilteredItems()}
+          expandedPaths={expandedPaths}
+          loadingFolders={loadingFolders}
+          onToggleFolder={toggleFolder}
+          onAttachFile={handleAttachFile}
+          gitInfo={gitInfo}
+          commitMessage={commitMessage}
+          onCommitMessageChange={setCommitMessage}
+          committing={committing}
+          onGitCommit={handleGitCommit}
+          onQuickFill={handleQuickFill}
+          activeTaskId={activeTaskId}
+        />
       )}
+
 
       <CommandPalette
         open={paletteOpen}

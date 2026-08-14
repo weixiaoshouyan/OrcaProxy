@@ -16,3 +16,6 @@ export { ChatEmptyState } from './ChatEmptyState';
 export { ChatHeader } from './ChatHeader';
 export { MessageFooter } from './MessageFooter';
 export { TodoShelf } from './TodoShelf';
+export { ConversationSidebar, type ConversationSidebarProps } from './ConversationSidebar';
+export { Composer, type ComposerProps } from './Composer';
+export { RightSidebar, type RightSidebarProps, type RightSidebarGitInfo } from './RightSidebar';

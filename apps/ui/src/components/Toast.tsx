@@ -20,7 +20,7 @@ interface ToastItem {
   action?: ToastAction;
 }
 
-interface ToastContextValue {
+export interface ToastContextValue {
   toast: (type: ToastType, message: string, description?: string, duration?: number, action?: ToastAction) => void;
   success: (message: string, description?: string) => void;
   error: (message: string, description?: string) => void;
